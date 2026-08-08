@@ -253,6 +253,64 @@ main :: proc() {
 	)
 	stub_offset = 0
 
+	// At 1:1 the curve *is* the unity diagonal and runs through the top-right corner of the
+	// window. That is why the gain-reduction readout sits bottom right: the two shared a
+	// corner, and the curve drew straight through the number.
+	stub_unity = true
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
+	nvg.BeginFrame(vg, W, H, 1)
+	gui.draw_panel(vg)
+	gui.draw_controls(&ui)
+	nvg.EndFrame(vg)
+
+	unity := make([]u8, W * H * 4)
+	defer delete(unity)
+	gl.ReadPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(unity))
+
+	amber_in :: proc(pixels: []u8, x0, y0, x1, y1: int) -> int {
+		found := 0
+		for y in y0 ..< y1 {
+			for x in x0 ..< x1 {
+				p := at(pixels, x, y)
+				if p.r > 120 && p.r > p.g + 30 && p.g > p.b {
+					found += 1
+				}
+			}
+		}
+		return found
+	}
+
+	wx, wy := int(gui.WINDOW_X), int(gui.WINDOW_Y)
+	ww, wh := int(gui.WINDOW_W), int(gui.WINDOW_H)
+
+	// The readout lives top left, in the wedge above the unity diagonal — the only region
+	// the curve can provably never enter, since output is never louder than input.
+	readout := amber_in(unity, wx + 4, wy + 4, wx + 100, wy + 24)
+	check(
+		"readout renders in the top left",
+		readout > 20,
+		fmt.tprintf("%d amber pixels", readout),
+	)
+
+	// Directly below it, still above the diagonal: must stay clear even at 1:1, which is
+	// the worst case and the plugin's default.
+	clear_zone := amber_in(unity, wx + 12, wy + 34, wx + 60, wy + 52)
+	check(
+		"space above the diagonal stays clear at 1:1",
+		clear_zone == 0,
+		fmt.tprintf("%d amber pixels", clear_zone),
+	)
+
+	// And the corner the readout used to occupy is exactly where the curve runs at 1:1.
+	top_right := amber_in(unity, wx + ww - 46, wy + 4, wx + ww - 2, wy + 24)
+	check(
+		"at 1:1 the curve occupies the top right",
+		top_right > 8,
+		fmt.tprintf("%d amber pixels", top_right),
+	)
+
+	stub_unity = false
+
 	// Nothing should be pure black: that would mean an area was never drawn.
 	black := 0
 	for y in 0 ..< H {
@@ -313,6 +371,7 @@ main :: proc() {
 //
 
 stub_offset := u32(0)
+stub_unity := false
 
 stub_value :: proc(param: u32) -> f64 {
 	// Spread the controls out so a stuck-at-zero bug is visible in the render.
@@ -336,6 +395,9 @@ stub_bridge :: proc() -> gui.Bridge {
 			return kind == .Gain_Reduction ? 6.5 : -9
 		},
 		curve = proc(user: rawptr, input_db: f64) -> f64 {
+			if stub_unity {
+				return input_db // 1:1, the plugin's default and the worst case for overlap
+			}
 			// A 4:1 curve at -18 with a 6 dB knee, so the window shows a real shape.
 			threshold, ratio, knee :: -18.0, 4.0, 6.0
 			over := input_db - threshold

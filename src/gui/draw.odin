@@ -193,19 +193,30 @@ draw_window :: proc(g: ^Gui) {
 
 	nvg.Restore(vg)
 
-	// Readout
+	// Readout, top left.
+	//
+	// A compressor's output is never louder than its input, so the curve can never rise
+	// above the unity diagonal. That makes the region above the diagonal the one place in
+	// the window it provably cannot reach, at any threshold or ratio — unlike the top right
+	// (where it passes at 1:1) or the bottom right (where it lands at extreme settings).
 	gr := g.bridge.meter(g.bridge.user, .Gain_Reduction)
-	nvg.FontFace(vg, FONT_LEGEND)
-	nvg.FontSize(vg, 10)
-	nvg.FillColor(vg, hex(DISPLAY_INK))
-	nvg.TextAlign(vg, .LEFT, .BASELINE)
-	nvg.Text(vg, x + 7, y + 17, "GR")
-
 	buffer: [32]u8
+	value := format_db(buffer[:], -gr)
+
+	baseline := y + 18
+
 	nvg.FontFace(vg, FONT_MONO)
 	nvg.FontSize(vg, 12)
-	nvg.TextAlign(vg, .RIGHT, .BASELINE)
-	nvg.Text(vg, x + w - 7, y + 17, format_db(buffer[:], -gr))
+	nvg.TextAlign(vg, .LEFT, .BASELINE)
+
+	// Same face and size as the number, dimmed so it still reads as a label. Measuring it
+	// keeps the pair glued together rather than relying on a guessed offset.
+	nvg.FillColor(vg, nvg.RGBA(255, 182, 72, 170))
+	label_width := nvg.TextBounds(vg, 0, 0, "GR")
+	nvg.Text(vg, x + 8, baseline, "GR")
+
+	nvg.FillColor(vg, hex(DISPLAY_INK))
+	nvg.Text(vg, x + 8 + label_width + 6, baseline, value)
 
 	label_text(vg, x + w / 2, y + h + 26, "IN -60 - 0 dB", 9, hex(LEGEND_DIM))
 }

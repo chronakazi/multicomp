@@ -630,10 +630,18 @@
   g += `<path d="${cv.d}" fill="none" stroke="var(--display-ink)" stroke-width="2.2" filter="url(#glow)" opacity=".85"/>`;
   g += `<path d="${cv.d}" fill="none" stroke="var(--display-ink)" stroke-width="1.4"/>`;
   g += `<circle id="opPoint" cx="${cv.X(-12)}" cy="${cv.Y(cv.out(-12))}" r="3.4" fill="var(--display-ink)" filter="url(#glow)"/>`;
-  g += `<text id="grRead" x="${wx+ww-7}" y="${wy+17}" text-anchor="end"
+  // Readout sits top left, label and value together in the same monospace face.
+  //
+  // A compressor's output is never louder than its input, so the curve can never rise above
+  // the unity diagonal - which makes the region above that diagonal the one part of the
+  // window it provably cannot reach, whatever the threshold and ratio. The top right is
+  // where it passes at 1:1, and the bottom right is where it lands at extreme settings.
+  g += `<text x="${wx+8}" y="${wy+18}" text-anchor="start"
+          font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="12" font-weight="600"
+          fill="var(--display-ink)" opacity=".67">GR</text>`;
+  g += `<text id="grRead" x="${wx+34}" y="${wy+18}" text-anchor="start"
           font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="12" font-weight="600"
           fill="var(--display-ink)" style="font-variant-numeric:tabular-nums">-4.2 dB</text>`;
-  g += label(wx + 7, wy + 17, "GR", 9, 700, ".16em", "var(--display-ink)", "start");
   g += `<rect x="${wx}" y="${wy}" width="${ww}" height="${wh}" rx="2" fill="url(#glass)"/>`;
   g += label(wx + ww/2, wy + wh + 26, "IN -60 \u2192 0 dB", 8.5, 500, ".06em", "var(--legend-dim)");
 
