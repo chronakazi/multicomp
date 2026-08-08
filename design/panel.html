@@ -1,0 +1,732 @@
+<title>MultiComp — Faceplate Design</title>
+<style>
+  :root {
+    --ink: #16181a;
+    --ink-soft: #5c6167;
+    --page: #edeae4;
+    --page-2: #e2ded6;
+    --rule: #cdc8bf;
+    --accent: #b4622a;
+
+    /* ---- Faceplate finish: Graphite (default) ---- */
+    --walnut-1: #6b4426;
+    --walnut-2: #3d2515;
+    --walnut-3: #543320;
+    --panel-1: #4a4e52;
+    --panel-2: #34383b;
+    --panel-3: #2a2d30;
+    --legend: #e6e1d4;
+    --legend-dim: #9c9789;
+    --engrave: #1b1d1f;
+    --nickel-1: #d7d3ca;
+    --nickel-2: #a9a49a;
+    --nickel-3: #6f6b64;
+    --collar-1: #26282a;
+    --collar-2: #131415;
+    --amber: #ff9e2c;
+    --amber-dim: #7a4a12;
+    --display-bg: #120e08;
+    --display-ink: #ffb648;
+  }
+
+  :root[data-finish="ivory"] {
+    --walnut-1: #7d5230;
+    --walnut-2: #472b18;
+    --walnut-3: #5f3a22;
+    --panel-1: #efe9da;
+    --panel-2: #ddd5c2;
+    --panel-3: #cdc4b0;
+    --legend: #2b2723;
+    --legend-dim: #6d665c;
+    --engrave: #b9b0a0;
+    --nickel-1: #8f2f27;
+    --nickel-2: #6b1f1a;
+    --nickel-3: #3d100d;
+    --collar-1: #2e2a26;
+    --collar-2: #171412;
+    --amber: #c2401f;
+    --amber-dim: #8a6a4a;
+    --display-bg: #191410;
+    --display-ink: #ffb648;
+  }
+
+  :root[data-finish="taupe"] {
+    --walnut-1: #6b4426;
+    --walnut-2: #3d2515;
+    --walnut-3: #543320;
+    --panel-1: #cbc6ba;
+    --panel-2: #b3ada0;
+    --panel-3: #9d9789;
+    --legend: #33302a;
+    --legend-dim: #6b665c;
+    --engrave: #8e887b;
+    --nickel-1: #e3dfd6;
+    --nickel-2: #b0aba1;
+    --nickel-3: #74706a;
+    --collar-1: #2a2724;
+    --collar-2: #141210;
+    --amber: #d8801c;
+    --amber-dim: #8a6432;
+    --display-bg: #0c1418;
+    --display-ink: #56e0cc;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #eceef0; --ink-soft: #9aa1a8; --page: #17191b; --page-2: #1e2124; --rule: #33373b; --accent: #e08a4a; }
+  }
+  :root[data-theme="dark"] { --ink: #eceef0; --ink-soft: #9aa1a8; --page: #17191b; --page-2: #1e2124; --rule: #33373b; --accent: #e08a4a; }
+  :root[data-theme="light"] { --ink: #16181a; --ink-soft: #5c6167; --page: #edeae4; --page-2: #e2ded6; --rule: #cdc8bf; --accent: #b4622a; }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 400 16px/1.6 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  .eyebrow {
+    font-size: 11px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 10px;
+  }
+  h1 {
+    font-size: clamp(30px, 4.4vw, 46px); font-weight: 800; letter-spacing: -.02em;
+    margin: 0 0 12px; text-wrap: balance;
+  }
+  .lede { font-size: 17px; color: var(--ink-soft); max-width: 62ch; margin: 0 0 32px; }
+
+  h2 {
+    font-size: 12px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--ink-soft); margin: 56px 0 18px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  /* ---- finish switcher ---- */
+  .finishes { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 20px; }
+  .finish {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 8px 14px 8px 10px; border: 1px solid var(--rule); border-radius: 2px;
+    background: var(--page-2); color: var(--ink);
+    font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .finish:hover { border-color: var(--accent); }
+  .finish[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--page-2)); }
+  .finish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chip { width: 26px; height: 14px; border-radius: 1px; border: 1px solid rgba(0,0,0,.35); }
+
+  .stage { overflow-x: auto; padding-bottom: 4px; }
+  .panel-shell { min-width: 720px; filter: drop-shadow(0 18px 34px rgba(0,0,0,.34)); }
+  svg.panel { display: block; width: 100%; height: auto; }
+
+  .caption { font-size: 13px; color: var(--ink-soft); margin: 14px 0 0; }
+
+  /* ---- spec ---- */
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 28px; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+  .sw { border: 1px solid var(--rule); border-radius: 2px; overflow: hidden; background: var(--page-2); }
+  .sw i { display: block; height: 46px; }
+  .sw b { display: block; font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; padding: 8px 10px 0; }
+  .sw code { display: block; font: 400 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink-soft); padding: 0 10px 8px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+  td code { font: 400 12.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--accent); }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  ul.notes { margin: 0; padding-left: 18px; }
+  ul.notes li { margin-bottom: 10px; color: var(--ink-soft); }
+  ul.notes strong { color: var(--ink); font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">MultiComp · Faceplate proposal</p>
+  <h1>A compressor that looks like it has a power switch on the back</h1>
+  <p class="lede">
+    Walnut cheeks, anodised aluminium, engraved bays and a backlit window. Every control below maps to a
+    parameter that already works in the plugin — this is a skin over Phase&nbsp;4, not a wishlist.
+    <strong>Graphite is the chosen finish;</strong> the other two are kept here as the alternatives
+    that were considered. The geometry is identical across all three.
+  </p>
+
+  <div class="finishes" role="group" aria-label="Faceplate finish">
+    <button class="finish" data-finish="graphite" aria-pressed="true">
+      <span class="chip" style="background:linear-gradient(#4a4e52,#2a2d30)"></span>Graphite
+    </button>
+    <button class="finish" data-finish="ivory" aria-pressed="false">
+      <span class="chip" style="background:linear-gradient(#efe9da,#cdc4b0)"></span>Ivory &amp; oxblood
+    </button>
+    <button class="finish" data-finish="taupe" aria-pressed="false">
+      <span class="chip" style="background:linear-gradient(#cbc6ba,#9d9789)"></span>Taupe
+    </button>
+  </div>
+
+  <div class="stage">
+    <div class="panel-shell">
+      <svg class="panel" id="panel" viewBox="0 0 1180 460" role="img"
+           aria-label="MultiComp faceplate: walnut cheeks, six engraved bays of controls, backlit transfer-curve window and LED meter bay."></svg>
+    </div>
+  </div>
+  <p class="caption">1180 × 460 pt. Meters animate to show how gain reduction reads in motion.</p>
+
+  <h2>Palette</h2>
+  <div class="swatches" id="swatches"></div>
+
+  <h2>Control inventory</h2>
+  <div class="cols">
+    <div>
+      <table>
+        <thead><tr><th>Bay</th><th>Controls</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Input</strong></td><td>Input Trim, Bypass</td></tr>
+          <tr><td><strong>Compressor</strong></td><td>Threshold, <em>Ratio</em> (hero), Knee</td></tr>
+          <tr><td><strong>Envelope</strong></td><td>Attack, Release, Auto Release</td></tr>
+          <tr><td><strong>Window</strong></td><td>Transfer curve, operating point, GR readout</td></tr>
+          <tr><td><strong>Output</strong></td><td>Makeup, Auto Makeup, Mix, Output Trim</td></tr>
+          <tr><td><strong>Detector</strong></td><td>Detector, Topology, Stereo Link, Channel Mode, Lookahead</td></tr>
+          <tr><td><strong>Sidechain</strong></td><td>SC Source, SC High-Pass, SC Listen</td></tr>
+          <tr><td><strong>Meters</strong></td><td>Gain reduction, output level</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <table>
+        <thead><tr><th>Type role</th><th>Treatment</th></tr></thead>
+        <tbody>
+          <tr><td>Wordmark</td><td><code>800 / scaleX .86 / .04em</code><br>Condensed industrial</td></tr>
+          <tr><td>Bay legend</td><td><code>700 / 11px / .22em</code><br>Engraved, uppercase</td></tr>
+          <tr><td>Control label</td><td><code>600 / 10px / .12em</code><br>Silkscreen</td></tr>
+          <tr><td>Scale ends</td><td><code>500 / 8.5px / .06em</code><br>Dimmed legend</td></tr>
+          <tr><td>Readout</td><td><code>SF Mono / tabular</code><br>Backlit amber</td></tr>
+        </tbody>
+      </table>
+      <p class="caption">
+        Real panel legend is set in Helvetica or Univers, so Helvetica Neue here is the authentic
+        choice rather than a fallback — which matters, since the artifact CSP blocks font CDNs.
+      </p>
+    </div>
+  </div>
+
+  <h2>Decisions worth your veto</h2>
+  <ul class="notes">
+    <li><strong>Bay widths are computed, not eyeballed.</strong> A knob's real footprint is
+      <code>2 × (r + 11)</code>, because its tick arc reaches widest at 3 and 9 o'clock — not at the
+      pointer. Every bay is sized from the footprints it contains plus a 12&nbsp;pt gap between
+      neighbours and 14&nbsp;pt to each divider. Sizing by eye is what put tick arcs through the
+      dividers in the first pass, and it is why the panel had to grow to 1180&nbsp;pt: twenty controls
+      genuinely do not fit 1000 with honest clearance.</li>
+    <li><strong>Ratio is the hero, not threshold.</strong> It is the control that changes what the unit
+      <em>is</em> — and at 1:1 it is also the transparency switch, so it earns the biggest knob.</li>
+    <li><strong>Two tiers, not one.</strong> Twenty controls in a single row would mean twenty tiny knobs.
+      The upper tier is what you touch while mixing; the lower strip is setup you configure once.</li>
+    <li><strong>The window is amber, not a screen.</strong> It reads as backlit glass rather than an LCD,
+      which keeps it in the same material world as the rest of the box.</li>
+    <li><strong>The panel ignores your OS theme.</strong> A piece of hardware does not change colour when
+      the sun goes down. The page around it responds; the unit does not.</li>
+  </ul>
+
+  <h2>Next</h2>
+  <p class="lede" style="margin-bottom:0">
+    Once the finish and layout are settled, this SVG becomes the specification: coordinates transfer
+    1:1 into nanovg calls at 1180 × 460, and the palette becomes a token table in
+    <code>src/gui/</code>. Phase&nbsp;5 builds the Cocoa view and GL context that hosts it.
+  </p>
+</div>
+
+<script>
+(() => {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.getElementById("panel");
+
+  // ---------- helpers ----------
+  const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const pol = (cx, cy, r, deg) => {
+    const a = (deg - 90) * Math.PI / 180;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+
+  const TICK_REACH = 11;   // outermost tick radius past the cap
+
+  // Knob sweep: 240 degrees, from 7 o'clock round to 5 o'clock.
+  const A0 = -120, A1 = 120;
+  const ang = t => A0 + (A1 - A0) * t;
+
+  // SVG applies letter-spacing after the final glyph too, so the advance width carries
+  // one extra tracking unit. Centred text therefore sits half a unit left of true centre,
+  // and end-anchored text a full unit left. Compensate, or every centred label on the
+  // panel is subtly off - which is part of what made the dataplate look wrong.
+  function label(x, y, text, size, weight, tracking, fill, anchor) {
+    anchor = anchor || "middle";
+    const em = parseFloat(tracking) || 0;
+    const nudge = anchor === "middle" ? (em * size) / 2 : anchor === "end" ? em * size : 0;
+    return `<text x="${x + nudge}" y="${y}" text-anchor="${anchor}"
+      font-family="'Helvetica Neue',Helvetica,Arial,sans-serif"
+      font-size="${size}" font-weight="${weight}" letter-spacing="${tracking}"
+      fill="${fill}">${esc(text)}</text>`;
+  }
+
+  // A dataplate rivet: domed, catching light from the top left.
+  function rivet(cx, cy) {
+    return `<g>
+      <circle cx="${cx}" cy="${cy}" r="3" fill="rgba(0,0,0,.5)"/>
+      <circle cx="${cx}" cy="${cy - .3}" r="2.4" fill="url(#screw)"/>
+      <circle cx="${cx - .7}" cy="${cy - 1}" r=".9" fill="#fff" opacity=".45"/>
+    </g>`;
+  }
+
+  function knob(o) {
+    const { cx, cy, r, t, name, hero } = o;
+    const a = ang(t);
+    let s = "";
+
+    // seat shadow
+    s += `<ellipse cx="${cx}" cy="${cy + r * 0.16}" rx="${r * 1.06}" ry="${r * 1.02}" fill="rgba(0,0,0,.45)" filter="url(#soft)"/>`;
+
+    // Tick arc. Its widest point is at 3 and 9 o'clock, so a knob's true horizontal
+    // footprint is 2*(r + TICK_REACH) - which is what the bay widths are budgeted from.
+    const ticks = hero ? 21 : 11;
+    for (let i = 0; i < ticks; i++) {
+      const ta = ang(i / (ticks - 1));
+      const major = i === 0 || i === ticks - 1 || (hero && i === (ticks - 1) / 2);
+      const [x1, y1] = pol(cx, cy, r + 4, ta);
+      const [x2, y2] = pol(cx, cy, r + (major ? TICK_REACH : 8), ta);
+      s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--legend-dim)"
+             stroke-width="${major ? 1.6 : 1}" stroke-linecap="round" opacity="${major ? .95 : .55}"/>`;
+    }
+
+    // collar + cap
+    s += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#collar)"/>`;
+    s += `<circle cx="${cx}" cy="${cy}" r="${r - 2.5}" fill="url(#cap)"/>`;
+    s += `<circle cx="${cx}" cy="${cy}" r="${r - 2.5}" fill="url(#capSheen)" style="mix-blend-mode:overlay"/>`;
+
+    s += `<circle cx="${cx}" cy="${cy}" r="${r - 2.5}" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="1"/>`;
+
+    // pointer
+    const [px1, py1] = pol(cx, cy, r * (hero ? 0.34 : 0.28), a);
+    const [px2, py2] = pol(cx, cy, r - 6, a);
+    s += `<line x1="${px1}" y1="${py1}" x2="${px2}" y2="${py2}" stroke="var(--engrave)" stroke-width="${hero ? 4.6 : 3.4}" stroke-linecap="round"/>`;
+    s += `<line x1="${px1}" y1="${py1}" x2="${px2}" y2="${py2}" stroke="var(--amber)" stroke-width="${hero ? 2.2 : 1.5}" stroke-linecap="round"/>`;
+
+    // name + live readout, both centred under the knob
+    //
+    // Flanking min/max labels were tried and abandoned: at these knob spacings they
+    // collide with each other and cross the engraved bay dividers. A centred value is
+    // also more use to someone mixing than a static range they already know.
+    s += label(cx, cy + r + 20, name, 10, 600, ".12em", "var(--legend)");
+    if (o.value) s += readout(cx, cy + r + 33, o.value);
+    return s;
+  }
+
+  function readout(x, y, text) {
+    return `<text x="${x}" y="${y}" text-anchor="middle"
+      font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="9" font-weight="600"
+      letter-spacing=".01em" fill="var(--legend-dim)"
+      style="font-variant-numeric:tabular-nums">${esc(text)}</text>`;
+  }
+
+  function led(cx, cy, on, r) {
+    r = r || 4;
+    let s = `<circle cx="${cx}" cy="${cy}" r="${r + 2}" fill="var(--collar-2)"/>`;
+    if (on) {
+      s += `<circle cx="${cx}" cy="${cy}" r="${r + 6}" fill="var(--amber)" opacity=".22" filter="url(#soft)"/>`;
+      s += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="var(--amber)"/>`;
+      s += `<circle cx="${cx - r*.3}" cy="${cy - r*.3}" r="${r*.42}" fill="#fff" opacity=".7"/>`;
+    } else {
+      s += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="var(--amber-dim)" opacity=".5"/>`;
+    }
+    return s;
+  }
+
+  // Two-position slide switch, drawn vertically.
+  function toggle(cx, cy, up, upLabel, downLabel, name) {
+    const w = 17, h = 40;
+    let s = `<rect x="${cx - w/2}" y="${cy - h/2}" width="${w}" height="${h}" rx="3" fill="url(#slot)"/>`;
+    s += `<rect x="${cx - w/2}" y="${cy - h/2}" width="${w}" height="${h}" rx="3" fill="none" stroke="rgba(0,0,0,.5)"/>`;
+    const ly = up ? cy - h/4 : cy + h/4;
+    s += `<rect x="${cx - w/2 + 2.5}" y="${ly - 9}" width="${w - 5}" height="18" rx="2.5" fill="url(#cap)"/>`;
+    s += `<rect x="${cx - w/2 + 2.5}" y="${ly - 9}" width="${w - 5}" height="18" rx="2.5" fill="none" stroke="rgba(255,255,255,.25)"/>`;
+    s += label(cx + 15, cy - h/4 + 3, upLabel, 8.5, 600, ".06em", up ? "var(--legend)" : "var(--legend-dim)", "start");
+    s += label(cx + 15, cy + h/4 + 3, downLabel, 8.5, 600, ".06em", up ? "var(--legend-dim)" : "var(--legend)", "start");
+    s += label(cx + 4, cy + h/2 + 22, name, 10, 600, ".12em", "var(--legend)");
+    return s;
+  }
+
+  // Rotary selector with discrete labelled positions.
+  function selector(cx, cy, r, idx, options, name) {
+    const n = options.length;
+    const LABEL_R = 39;
+    let s = "";
+    options.forEach((opt, i) => {
+      const a = ang(n === 1 ? .5 : i / (n - 1));
+      // Short stubs close to the cap. At 120 degrees a longer tick puts its endpoint
+      // inside the label's bounding box: the label is a wide horizontal box while the
+      // tick approaches diagonally, so moving out along the radius buys only half as much
+      // vertical separation as it does radial.
+      const [tx, ty] = pol(cx, cy, r + 3, a);
+      const [ex, ey] = pol(cx, cy, r + 6, a);
+      s += `<line x1="${tx}" y1="${ty}" x2="${ex}" y2="${ey}" stroke="var(--legend-dim)" stroke-width="1.4" stroke-linecap="round"/>`;
+      const [lx, ly] = pol(cx, cy, LABEL_R, a);
+      s += label(lx, ly + 3, opt, 8.5, 600, ".05em", i === idx ? "var(--legend)" : "var(--legend-dim)");
+    });
+    s += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#collar)"/>`;
+    s += `<circle cx="${cx}" cy="${cy}" r="${r - 2.5}" fill="url(#cap)"/>`;
+    const a = ang(n === 1 ? .5 : idx / (n - 1));
+    const [px, py] = pol(cx, cy, r - 5, a);
+    s += `<line x1="${cx}" y1="${cy}" x2="${px}" y2="${py}" stroke="var(--engrave)" stroke-width="3.4" stroke-linecap="round"/>`;
+    s += `<line x1="${cx}" y1="${cy}" x2="${px}" y2="${py}" stroke="var(--amber)" stroke-width="1.5" stroke-linecap="round"/>`;
+    s += label(cx, cy + r + 18, name, 10, 600, ".12em", "var(--legend)");
+    return s;
+  }
+
+  // Momentary/latching square button with an indicator lamp.
+  function button(cx, cy, on, name) {
+    const w = 40, h = 24;
+    let s = `<rect x="${cx - w/2}" y="${cy - h/2}" width="${w}" height="${h}" rx="3" fill="url(#cap)"/>`;
+    s += `<rect x="${cx - w/2}" y="${cy - h/2}" width="${w}" height="${h}" rx="3" fill="none" stroke="rgba(0,0,0,.45)"/>`;
+    s += `<rect x="${cx - w/2 + 1.5}" y="${cy - h/2 + 1.5}" width="${w - 3}" height="${h/2}" rx="2" fill="rgba(255,255,255,.2)"/>`;
+    s += led(cx, cy, on, 3.5);
+    s += label(cx, cy + h/2 + 17, name, 10, 600, ".12em", "var(--legend)");
+    return s;
+  }
+
+  function bay(x, w, y, h, name) {
+    let s = "";
+    if (x > 30) {
+      s += `<line x1="${x}" y1="${y + 6}" x2="${x}" y2="${y + h - 6}" stroke="rgba(0,0,0,.45)" stroke-width="1"/>`;
+      s += `<line x1="${x + 1}" y1="${y + 6}" x2="${x + 1}" y2="${y + h - 6}" stroke="rgba(255,255,255,.07)" stroke-width="1"/>`;
+    }
+    s += label(x + w / 2, y + 20, name, 11, 700, ".22em", "var(--legend)");
+    s += `<line x1="${x + 14}" y1="${y + 27}" x2="${x + w - 14}" y2="${y + 27}" stroke="var(--legend)" stroke-width=".8" opacity=".2"/>`;
+    return s;
+  }
+
+  function screw(cx, cy) {
+    return `<g>
+      <circle cx="${cx}" cy="${cy}" r="5.5" fill="rgba(0,0,0,.4)"/>
+      <circle cx="${cx}" cy="${cy}" r="4.6" fill="url(#screw)"/>
+      <path d="M${cx} ${cy-2.9} L${cx} ${cy+2.9} M${cx-2.9} ${cy} L${cx+2.9} ${cy}"
+            stroke="rgba(0,0,0,.62)" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M${cx} ${cy-2.9} L${cx} ${cy+2.9} M${cx-2.9} ${cy} L${cx+2.9} ${cy}"
+            transform="translate(.5,.5)" stroke="rgba(255,255,255,.16)" stroke-width=".8"
+            stroke-linecap="round"/>
+    </g>`;
+  }
+
+  // ---------- meters ----------
+  const GR_SEGS = 16, OUT_SEGS = 16;
+  function ladder(x, y, w, segCount, lit, kind) {
+    const gap = 2, segH = 12;
+    let s = "";
+    for (let i = 0; i < segCount; i++) {
+      const sy = y + i * (segH + gap);
+      let on, col;
+      if (kind === "gr") {
+        on = i < lit;
+        col = "var(--amber)";
+      } else {
+        on = (segCount - 1 - i) < lit;
+        col = i < 2 ? "#ff4d3d" : i < 5 ? "#ffc53d" : "#54d67e";
+      }
+      s += `<rect x="${x}" y="${sy}" width="${w}" height="${segH}" rx="1.5" fill="var(--collar-2)"/>`;
+      s += `<rect class="seg" data-kind="${kind}" data-i="${i}" x="${x + 1}" y="${sy + 1}" width="${w - 2}" height="${segH - 2}" rx="1"
+             fill="${col}" opacity="${on ? 1 : .09}"/>`;
+    }
+    return s;
+  }
+
+  // ---------- transfer curve window ----------
+  function curvePath(x, y, w, h, threshold, ratio, knee) {
+    // dB domain: -60..0 mapped to the window box.
+    const X = db => x + ((db + 60) / 60) * w;
+    const Y = db => y + h - ((db + 60) / 60) * h;
+    const out = db => {
+      const over = db - threshold, k = knee, ir = 1 / ratio;
+      if (2 * over < -k) return db;
+      if (k > 0 && 2 * Math.abs(over) <= k) { const d = over + k / 2; return db + (ir - 1) * d * d / (2 * k); }
+      return threshold + over * ir;
+    };
+    let d = "";
+    for (let i = 0; i <= 120; i++) {
+      const db = -60 + (60 * i) / 120;
+      d += (i ? "L" : "M") + X(db).toFixed(2) + " " + Y(out(db)).toFixed(2) + " ";
+    }
+    return { d, X, Y, out };
+  }
+
+  // ---------- build ----------
+  const W = 1180, H = 460, CHEEK = 28;
+  const FX = CHEEK, FW = W - CHEEK * 2;          // face area
+  const HEAD = 86;
+  const T_Y = HEAD, T_H = 220;                    // upper tier
+  const B_Y = T_Y + T_H, B_H = 138;               // lower tier
+  const METER_X = 1052, METER_W = 100;
+
+  const defs = `
+  <defs>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.4"/>
+    </filter>
+
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"   stop-color="var(--walnut-2)"/>
+      <stop offset=".35" stop-color="var(--walnut-1)"/>
+      <stop offset=".7"  stop-color="var(--walnut-3)"/>
+      <stop offset="1"   stop-color="var(--walnut-2)"/>
+    </linearGradient>
+
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="var(--panel-1)"/>
+      <stop offset=".45" stop-color="var(--panel-2)"/>
+      <stop offset="1"   stop-color="var(--panel-3)"/>
+    </linearGradient>
+
+    <pattern id="brush" width="3" height="1" patternUnits="userSpaceOnUse">
+      <rect width="1" height="1" fill="#fff" opacity=".030"/>
+      <rect x="1.6" width=".7" height="1" fill="#000" opacity=".030"/>
+    </pattern>
+
+    <radialGradient id="collar" cx=".38" cy=".32" r=".8">
+      <stop offset="0" stop-color="var(--collar-1)"/>
+      <stop offset="1" stop-color="var(--collar-2)"/>
+    </radialGradient>
+    <linearGradient id="cap" x1=".2" y1="0" x2=".8" y2="1">
+      <stop offset="0"   stop-color="var(--nickel-1)"/>
+      <stop offset=".55" stop-color="var(--nickel-2)"/>
+      <stop offset="1"   stop-color="var(--nickel-3)"/>
+    </linearGradient>
+    <radialGradient id="capSheen" cx=".32" cy=".26" r=".72">
+      <stop offset="0" stop-color="#fff" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="slot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--collar-2)"/>
+      <stop offset="1" stop-color="var(--collar-1)"/>
+    </linearGradient>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#000" stop-opacity=".34"/>
+      <stop offset=".55" stop-color="#000" stop-opacity=".20"/>
+      <stop offset="1"   stop-color="#fff" stop-opacity=".045"/>
+    </linearGradient>
+    <radialGradient id="screw" cx=".35" cy=".3" r=".8">
+      <stop offset="0" stop-color="var(--nickel-1)"/>
+      <stop offset="1" stop-color="var(--nickel-3)"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".16"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity=".02"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".07"/>
+    </linearGradient>
+    <linearGradient id="vign" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset=".18" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".84" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".22"/>
+    </linearGradient>
+  </defs>`;
+
+  let g = "";
+
+  // --- chassis ---
+  g += `<rect x="0" y="0" width="${W}" height="${H}" rx="5" fill="url(#wood)"/>`;
+  // wood grain
+  for (let i = 0; i < 26; i++) {
+    const gx = (i * 37 % 26) + (i % 3);
+    g += `<path d="M${gx + (i%2?1:12)} 0 C ${gx + 6} ${H*.3}, ${gx - 3} ${H*.6}, ${gx + (i%2?3:9)} ${H}"
+           stroke="#000" stroke-opacity=".13" stroke-width="${1 + (i % 3) * .5}" fill="none"/>`;
+    g += `<path d="M${W - CHEEK + (gx % CHEEK)} 0 C ${W - CHEEK + 8} ${H*.35}, ${W - CHEEK + 2} ${H*.7}, ${W - CHEEK + (gx % CHEEK)} ${H}"
+           stroke="#000" stroke-opacity=".13" stroke-width="${1 + (i % 3) * .5}" fill="none"/>`;
+  }
+
+  // --- faceplate ---
+  g += `<rect x="${FX}" y="0" width="${FW}" height="${H}" fill="url(#face)"/>`;
+  g += `<rect x="${FX}" y="0" width="${FW}" height="${H}" fill="url(#brush)"/>`;
+  g += `<rect x="${FX}" y="0" width="${FW}" height="${H}" fill="url(#vign)"/>`;
+  g += `<line x1="${FX}" y1="0" x2="${FX}" y2="${H}" stroke="#000" stroke-opacity=".5"/>`;
+  g += `<line x1="${FX+1}" y1="0" x2="${FX+1}" y2="${H}" stroke="#fff" stroke-opacity=".10"/>`;
+  g += `<line x1="${W-CHEEK}" y1="0" x2="${W-CHEEK}" y2="${H}" stroke="#000" stroke-opacity=".5"/>`;
+  g += `<line x1="${W-CHEEK-1}" y1="0" x2="${W-CHEEK-1}" y2="${H}" stroke="#fff" stroke-opacity=".07"/>`;
+
+  // --- header ---
+  g += `<line x1="${FX}" y1="${HEAD}" x2="${W-CHEEK}" y2="${HEAD}" stroke="#000" stroke-opacity=".42"/>`;
+  g += `<line x1="${FX}" y1="${HEAD+1}" x2="${W-CHEEK}" y2="${HEAD+1}" stroke="#fff" stroke-opacity=".09"/>`;
+
+  // --- maker dataplate: an engraved recess, rivetted at both ends ---
+  // Every element is measured from the plate centre, so the two lines stay centred on the
+  // plate itself rather than on an arbitrary text inset.
+  const pX = 46, pY = 24, pW = 152, pH = 44;
+  const pCx = pX + pW / 2;
+  g += `<rect x="${pX}" y="${pY}" width="${pW}" height="${pH}" rx="2.5" fill="url(#plate)"/>`;
+  g += `<rect x="${pX + .5}" y="${pY + .5}" width="${pW - 1}" height="${pH - 1}" rx="2.2"
+         fill="none" stroke="rgba(0,0,0,.55)"/>`;
+  g += `<rect x="${pX + 1.5}" y="${pY + 1.5}" width="${pW - 3}" height="${pH - 3}" rx="1.6"
+         fill="none" stroke="rgba(255,255,255,.11)"/>`;
+  g += rivet(pX + 11, pY + pH / 2);
+  g += rivet(pX + pW - 11, pY + pH / 2);
+  g += label(pCx, pY + 17, "FOESOFT AUDIO", 10.5, 700, ".16em", "var(--legend)");
+  g += `<line x1="${pCx - 44}" y1="${pY + 23}" x2="${pCx + 44}" y2="${pY + 23}"
+         stroke="var(--legend)" stroke-width=".7" opacity=".20"/>`;
+  g += label(pCx, pY + 34, "MODEL MC-1 \u00b7 SER 0001", 7, 500, ".08em", "var(--legend-dim)");
+
+  // wordmark (right)
+  g += `<g transform="translate(${W-CHEEK-22},52) scale(.86,1)">
+          ${label(0, 0, "MULTICOMP", 38, 800, ".04em", "var(--legend)", "end")}
+        </g>`;
+  g += label(W-CHEEK-22, 68, "PROGRAM COMPRESSOR", 9, 600, ".26em", "var(--legend-dim)", "end");
+
+  // --- upper tier bays ---
+  //
+  // Bay widths are budgeted from each knob's real footprint, 2*(r + TICK_REACH), plus a
+  // 12pt gap between neighbours and 14pt to each divider. Sizing bays by eye is what let
+  // the tick arcs run into the dividers and into each other.
+  const bays = [
+    { x: 28,   w: 102, name: "INPUT" },
+    { x: 130,  w: 310, name: "COMPRESSOR" },
+    { x: 440,  w: 186, name: "ENVELOPE" },
+    { x: 626,  w: 164, name: "TRANSFER" },
+    { x: 790,  w: 262, name: "OUTPUT" },
+  ];
+  bays.forEach(b => { g += bay(b.x, b.w, T_Y, T_H, b.name); });
+
+  const KNOB_Y = 174;   // standard knob centre
+  const HERO_Y = 178;   // the hero sits slightly lower, so its ticks clear the legend rule
+  const BTN_Y  = 272;   // button row, well clear of the readouts above
+
+  // INPUT
+  g += knob({ cx: 79, cy: KNOB_Y, r: 26, t: .5, name: "INPUT TRIM", value: "0.0 dB" });
+  g += button(79, BTN_Y, false, "BYPASS");
+
+  // COMPRESSOR — Ratio is the hero: it decides what the unit is, and at 1:1 it is also
+  // the transparency switch.
+  g += knob({ cx: 181, cy: KNOB_Y, r: 26, t: .70, name: "THRESHOLD", value: "-18.0 dB" });
+  g += knob({ cx: 285, cy: HERO_Y, r: 44, t: .28, name: "RATIO", value: "6.0 : 1", hero: true });
+  g += knob({ cx: 389, cy: KNOB_Y, r: 26, t: .25, name: "KNEE", value: "6.0 dB" });
+
+  // ENVELOPE
+  g += knob({ cx: 490, cy: KNOB_Y, r: 26, t: .30, name: "ATTACK", value: "10.0 ms" });
+  g += knob({ cx: 576, cy: KNOB_Y, r: 26, t: .42, name: "RELEASE", value: "100 ms" });
+  g += button(533, BTN_Y, true, "AUTO RELEASE");
+
+  // TRANSFER window
+  const wx = 640, wy = 126, ww = 136, wh = 110;
+  g += `<rect x="${wx-5}" y="${wy-5}" width="${ww+10}" height="${wh+10}" rx="4" fill="var(--collar-2)"/>`;
+  g += `<rect x="${wx-5}" y="${wy-5}" width="${ww+10}" height="${wh+10}" rx="4" fill="none" stroke="rgba(255,255,255,.14)"/>`;
+  g += `<rect x="${wx}" y="${wy}" width="${ww}" height="${wh}" rx="2" fill="var(--display-bg)"/>`;
+  for (let i = 1; i < 6; i++) {
+    g += `<line x1="${wx + ww*i/6}" y1="${wy}" x2="${wx + ww*i/6}" y2="${wy+wh}" stroke="var(--display-ink)" stroke-opacity=".10"/>`;
+    g += `<line x1="${wx}" y1="${wy + wh*i/6}" x2="${wx+ww}" y2="${wy + wh*i/6}" stroke="var(--display-ink)" stroke-opacity=".10"/>`;
+  }
+  g += `<line x1="${wx}" y1="${wy+wh}" x2="${wx+ww}" y2="${wy}" stroke="var(--display-ink)" stroke-opacity=".22" stroke-dasharray="3 3"/>`;
+  const cv = curvePath(wx, wy, ww, wh, -18, 6, 6);
+  g += `<path d="${cv.d}" fill="none" stroke="var(--display-ink)" stroke-width="2.2" filter="url(#glow)" opacity=".85"/>`;
+  g += `<path d="${cv.d}" fill="none" stroke="var(--display-ink)" stroke-width="1.4"/>`;
+  g += `<circle id="opPoint" cx="${cv.X(-12)}" cy="${cv.Y(cv.out(-12))}" r="3.4" fill="var(--display-ink)" filter="url(#glow)"/>`;
+  g += `<text id="grRead" x="${wx+ww-7}" y="${wy+17}" text-anchor="end"
+          font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="12" font-weight="600"
+          fill="var(--display-ink)" style="font-variant-numeric:tabular-nums">-4.2 dB</text>`;
+  g += label(wx + 7, wy + 17, "GR", 9, 700, ".16em", "var(--display-ink)", "start");
+  g += `<rect x="${wx}" y="${wy}" width="${ww}" height="${wh}" rx="2" fill="url(#glass)"/>`;
+  g += label(wx + ww/2, wy + wh + 26, "IN -60 \u2192 0 dB", 8.5, 500, ".06em", "var(--legend-dim)");
+
+  // OUTPUT
+  g += knob({ cx: 839,  cy: KNOB_Y, r: 24, t: .55, name: "MAKEUP", value: "0.0 dB" });
+  g += knob({ cx: 921,  cy: KNOB_Y, r: 24, t: 1.0, name: "MIX",    value: "100 %" });
+  g += knob({ cx: 1003, cy: KNOB_Y, r: 24, t: .5,  name: "OUTPUT", value: "0.0 dB" });
+  g += button(921, BTN_Y, false, "AUTO MAKEUP");
+
+  // --- lower tier: setup you configure once, not while mixing ---
+  g += `<line x1="${FX}" y1="${B_Y}" x2="${METER_X}" y2="${B_Y}" stroke="#000" stroke-opacity=".34"/>`;
+  g += `<line x1="${FX}" y1="${B_Y+1}" x2="${METER_X}" y2="${B_Y+1}" stroke="#fff" stroke-opacity=".07"/>`;
+  g += bay(28,  620, B_Y, B_H, "DETECTOR");
+  g += bay(648, 404, B_Y, B_H, "SIDECHAIN");
+
+  const LOW_Y = 380;
+  g += selector(101, LOW_Y + 5, 19, 0, ["PEAK", "RMS", "HYBRID"], "MODE");
+  g += toggle(220, LOW_Y, true, "FWD", "FBK", "TOPOLOGY");
+  g += knob({ cx: 338, cy: LOW_Y, r: 21, t: 1.0, name: "STEREO LINK", value: "100 %" });
+  g += toggle(456, LOW_Y, true, "L/R", "M/S", "CHANNEL");
+  g += knob({ cx: 575, cy: LOW_Y, r: 21, t: 0, name: "LOOKAHEAD", value: "0.0 ms" });
+
+  g += toggle(725, LOW_Y, true, "INT", "EXT", "SC SOURCE");
+  g += knob({ cx: 850, cy: LOW_Y, r: 21, t: 0, name: "SC HIGH-PASS", value: "20 Hz" });
+  g += button(975, LOW_Y + 12, false, "SC LISTEN");
+
+  // --- meter bay ---
+  g += bay(METER_X, METER_W, T_Y, B_Y + B_H - T_Y, "METERS");
+  const mTop = 140, mH = GR_SEGS * 14 - 2;
+  g += ladder(1068, mTop, 20, GR_SEGS, 4, "gr");
+  g += ladder(1116, mTop, 20, OUT_SEGS, 9, "out");
+  const scale = ["+6","+3","0","-3","-6","-9","-12","-18","-24","-30"];
+  scale.forEach((sv, i) => {
+    g += label(1112, mTop + 10 + i * (mH / (scale.length - 0.5)), sv, 7, 500, ".02em", "var(--legend-dim)", "end");
+  });
+  g += label(1078, mTop + mH + 17, "GR", 9, 700, ".12em", "var(--legend)");
+  g += label(1126, mTop + mH + 17, "OUT", 9, 700, ".12em", "var(--legend)");
+
+  // --- screws ---
+  [[FX+13,14],[W-CHEEK-13,14],[FX+13,H-14],[W-CHEEK-13,H-14]]
+    .forEach(([x,y]) => { g += screw(x,y); });
+
+  svg.innerHTML = defs + g;
+
+  // ---------- ambient metering ----------
+  const grSegs  = [...svg.querySelectorAll('.seg[data-kind="gr"]')];
+  const outSegs = [...svg.querySelectorAll('.seg[data-kind="out"]')];
+  const opPoint = svg.querySelector("#opPoint");
+  const grRead  = svg.querySelector("#grRead");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (!reduced) {
+    let t = 0;
+    setInterval(() => {
+      t += 0.09;
+      // A plausible programme envelope: slow swell with occasional transients.
+      const env = 0.5 + 0.5 * Math.sin(t * 0.7) * Math.sin(t * 0.23 + 1.1);
+      const gr = Math.max(0, env * 9 + (Math.random() < 0.06 ? 3.5 : 0));
+      const lit = Math.round((gr / 14) * GR_SEGS);
+      grSegs.forEach((s, i) => s.setAttribute("opacity", i < lit ? "1" : ".09"));
+
+      const outLit = Math.round(8 + env * 6);
+      outSegs.forEach((s, i) => s.setAttribute("opacity", (OUT_SEGS - 1 - i) < outLit ? "1" : ".09"));
+
+      grRead.textContent = "−" + gr.toFixed(1) + " dB";
+      const db = -30 + env * 26;
+      opPoint.setAttribute("cx", cv.X(db).toFixed(1));
+      opPoint.setAttribute("cy", cv.Y(cv.out(db)).toFixed(1));
+    }, 90);
+  }
+
+  // ---------- finish switcher ----------
+  const swatchDefs = [
+    ["--panel-2", "Faceplate"], ["--legend", "Legend"], ["--walnut-1", "Cheek"],
+    ["--nickel-2", "Knob cap"], ["--amber", "Accent"], ["--display-bg", "Window"],
+  ];
+  const swWrap = document.getElementById("swatches");
+  function paintSwatches() {
+    const cs = getComputedStyle(document.documentElement);
+    swWrap.innerHTML = swatchDefs.map(([v, n]) => {
+      const val = cs.getPropertyValue(v).trim();
+      return `<div class="sw"><i style="background:${val}"></i><b>${n}</b><code>${val}</code></div>`;
+    }).join("");
+  }
+  paintSwatches();
+
+  document.querySelectorAll(".finish").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".finish").forEach(b => b.setAttribute("aria-pressed", "false"));
+      btn.setAttribute("aria-pressed", "true");
+      document.documentElement.setAttribute("data-finish", btn.dataset.finish);
+      paintSwatches();
+    });
+  });
+})();
+</script>
