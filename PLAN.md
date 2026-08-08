@@ -110,9 +110,23 @@ round-tripped every parameter at min/default/max through `value_to_text` →
 `process` still applies only bypass and the input/output trims; compression lands in
 Phases 2–3.
 
-**Phase 2 — DSP, headless.** All of `dsp/`, with `odin test` covering: static curve shape
-at known threshold/ratio/knee, attack/release time constants measured against a step input,
-and RMS detector convergence. No CLAP involvement — fast to iterate.
+**Phase 2 — DSP, headless. ✅ DONE.** `Gain_Computer` (quadratic soft knee), `Level_Detector`
+(peak/RMS/hybrid), `Envelope_Follower` (smooth decoupled peak detector), `Biquad` (RBJ,
+TDF-II), `Delay_Line` (caller-supplied storage, so dsp never allocates), `Smoother`, and
+`Compressor_Band` composing them. `Detector_Mode` and `Topology_Mode` live here, not in
+`plugin/`, since this is what switches on them.
+
+Verified: **19 tests, all passing** (`odin test src/dsp`) — hard-knee curve at known
+threshold/ratio, infinite-ratio limiting, knee continuity and monotonicity plus the local
+slope sweeping 1 → 1/ratio, attack and release time constants measured against a step
+input at 1/10/50 ms, RMS convergence on a sine to A/√2, biquad response at DC/corner/an
+octave down, exact delay-line offsets, and band-level integration including feedback
+topology settling at less reduction than feed-forward.
+
+Note on soft knee: inside the knee the soft curve applies *more* cumulative reduction than
+a hard knee, not less — it starts working at `T − W/2` and the two converge only at
+`T + W/2`. The slope is gentler; the total reduction is not. A test asserting the opposite
+was wrong and was corrected.
 
 **Phase 3 — Wire it up.** Sample-accurate event splitting in `process`, parameter smoothing,
 lookahead delay with `clap.latency` reporting, `clap.tail`. Gate: validator clean, plus a

@@ -8,6 +8,7 @@ import "core:strings"
 
 import clap "proj:clap-odin"
 import ext "proj:clap-odin/ext"
+import "proj:src/dsp"
 
 // The parameter table is the single source of truth: id, name, module, range, flags and
 // display formatting all live here. `clap.params`, state serialisation and (from Phase 6)
@@ -161,8 +162,8 @@ PARAMS := [Param_Id]Param {
 		module = "Detector",
 		kind = .Choice,
 		min = 0,
-		max = f64(len(Detector_Mode) - 1),
-		default = f64(Detector_Mode.Peak),
+		max = f64(len(dsp.Detector_Mode) - 1),
+		default = f64(dsp.Detector_Mode.Peak),
 		flags = FLAGS_CHOICE,
 		choices = DETECTOR_CHOICES,
 	},
@@ -171,8 +172,8 @@ PARAMS := [Param_Id]Param {
 		module = "Detector",
 		kind = .Choice,
 		min = 0,
-		max = f64(len(Topology_Mode) - 1),
-		default = f64(Topology_Mode.Feed_Forward),
+		max = f64(len(dsp.Topology_Mode) - 1),
+		default = f64(dsp.Topology_Mode.Feed_Forward),
 		flags = FLAGS_CHOICE,
 		choices = TOPOLOGY_CHOICES,
 	},
@@ -276,20 +277,11 @@ PARAMS := [Param_Id]Param {
 	},
 }
 
-// Enumerated parameter values. These are the meanings the DSP will switch on in Phase 2;
-// the parallel string tables are what the host and GUI display.
+// Enumerated parameter values. `Detector_Mode` and `Topology_Mode` are owned by the dsp
+// package, since that is what switches on them - defining them twice would let the
+// display strings drift away from the behaviour. These string tables are display only.
 
-Detector_Mode :: enum {
-	Peak,
-	RMS,
-	Hybrid,
-}
 DETECTOR_CHOICES := []string{"Peak", "RMS", "Hybrid"}
-
-Topology_Mode :: enum {
-	Feed_Forward,
-	Feedback,
-}
 TOPOLOGY_CHOICES := []string{"Feed-Forward", "Feedback"}
 
 Channel_Mode_Value :: enum {

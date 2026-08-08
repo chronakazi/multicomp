@@ -39,6 +39,14 @@ multicomp/
       state.odin       versioned state serialisation
       extensions.odin  audio-ports, latency, extension dispatch
     dsp/             package dsp — pure DSP, no CLAP types, unit-testable
+      db.odin          dB conversions, one_pole_coeff
+      gain_computer.odin  static curve with quadratic soft knee
+      envelope.odin    Level_Detector (peak/RMS/hybrid) + Envelope_Follower
+      biquad.odin      RBJ biquad, transposed direct form II
+      delay.odin       lookahead delay, caller-supplied storage
+      smoother.odin    one-pole parameter smoothing
+      band.odin        Compressor_Band — the multiband seam
+      dsp_test.odin    @(test) procs, run with `odin test src/dsp`
     gui/             (Phase 5) nanovg drawing + Cocoa view embedding
   clap-odin/         CLAP bindings — treat as a vendored dependency
     *.odin           package clap  — core API + factories
@@ -74,6 +82,12 @@ Typecheck the bindings (all three must be silent):
 
 ```bash
 odin check clap-odin -no-entry-point && odin check clap-odin/ext -no-entry-point && odin check clap-odin/ext/draft -no-entry-point
+```
+
+Run the DSP test suite (no CLAP involved, so it is fast to iterate on):
+
+```bash
+odin test src/dsp
 ```
 
 Build, bundle, validate and install all go through `build.sh`:
@@ -231,8 +245,16 @@ predates it. Absence there is not evidence the flag is missing; check the raw
 
 ## Working agreements
 
-- `clap-validator validate` must pass with **0 failures and 0 warnings** before any change
-  is called done. Report the actual counts.
-- No allocation, locks, file or console I/O in `process()` or below.
-- DSP in `src/dsp/` stays free of CLAP types so it can be tested with `odin test`.
+- `clap-validator validate` must pass with **0 failures and 0 warnings**, and
+  `odin test src/dsp` must be fully green, before any change is called done. Report the
+  actual counts.
+- No allocation, locks, file or console I/O in `process()` or below. `src/dsp/` is
+  `proc "contextless"` throughout, which makes this a compile error rather than a dropout.
+- DSP in `src/dsp/` stays free of CLAP types so it can be tested with `odin test`. If a
+  compressor change needs a CLAP type, it belongs in `plugin/`.
+- Tests live in the same package (`dsp_test.odin`). Confirmed cheap: `@(test)` procs and
+  the `core:testing` import add ~1 KB to the shipped dylib.
+- Enums the DSP switches on (`Detector_Mode`, `Topology_Mode`) are defined in `dsp/` and
+  referenced from `plugin/`. Do not redeclare them — the display strings would drift from
+  the behaviour.
 - Don't "fix" the binding naming conventions in passing — see the deviations list above.
