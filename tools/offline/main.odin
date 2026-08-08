@@ -306,8 +306,36 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	fmt.println("compression curve (threshold -20, ratio 4, hard knee)")
+	// Inserting the plugin and touching nothing must not change the signal at all. This is
+	// a regression guard: an earlier build defaulted to 4:1 at -18 dB and pulled 9 dB off
+	// typical program material the moment it was inserted.
+	fmt.println("factory defaults are transparent")
 	p.plugin.activate(p.plugin, SR, 1, 512)
+	for level in ([?]f64{-30, -18, -12, -6, -3}) {
+		out := db(run_sine(p, from_db(level), 1000, 0.5))
+		check(fmt.tprintf("untouched at %.0f dBFS in", level), out, level, 0.01)
+	}
+
+	// Every parameter flagged hidden is one whose behaviour is not implemented yet. A
+	// visible control that does nothing reads as a bug to whoever is using it.
+	fmt.println()
+	fmt.println("parameter visibility")
+	hidden, visible := 0, 0
+	for i in 0 ..< p.params.count(p.plugin) {
+		info: ext.Param_Info
+		if !p.params.get_info(p.plugin, i, &info) {
+			continue
+		}
+		if info.flags & u32(ext.Param_Info_Flag.HIDDEN) != 0 {
+			hidden += 1
+		} else {
+			visible += 1
+		}
+	}
+	fmt.printfln("  %d visible, %d hidden pending implementation", visible, hidden)
+
+	fmt.println()
+	fmt.println("compression curve (threshold -20, ratio 4, hard knee)")
 	set_params(
 		p,
 		[]Setting {

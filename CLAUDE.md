@@ -248,6 +248,17 @@ Flag sets are pre-composed: `FLAGS_CONTINUOUS` (automatable + modulatable),
 rounded to integers in `clamp_param`, because hosts and our choice indexing have to agree
 on what the value means.
 
+**A parameter whose behaviour is not implemented yet must carry `NOT_IMPLEMENTED`**
+(which is `CLAP_PARAM_IS_HIDDEN` — CLAP documents that flag as exactly "should not be shown
+to the user, because it is currently not used"). Otherwise a host's generic UI offers a
+control that silently does nothing, which reads as a bug. Drop the flag in the same change
+that makes the parameter work. `./build.sh --offline` prints the visible/hidden split.
+
+**Defaults must leave the plugin transparent.** Inserting it and touching nothing may not
+change the signal. Ratio therefore defaults to 1:1, where the gain computer returns its
+input unchanged at every level and the applied gain is exactly 1.0 — threshold and knee
+become irrelevant. `./build.sh --offline` asserts this at five input levels.
+
 Note that `clap-info` does not render the `IS_ENUM` flag at all — its flag vocabulary
 predates it. Absence there is not evidence the flag is missing; check the raw
 `Param_Info.flags` bits instead (`IS_ENUM` is bit 16, `0x10000`).

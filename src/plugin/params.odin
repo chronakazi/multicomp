@@ -69,11 +69,20 @@ FLAG_MODULATABLE :: u32(ext.Param_Info_Flag.MODULATABLE)
 FLAG_STEPPED :: u32(ext.Param_Info_Flag.STEPPED)
 FLAG_ENUM :: u32(ext.Param_Info_Flag.IS_ENUM)
 FLAG_BYPASS :: u32(ext.Param_Info_Flag.BYPASS)
+FLAG_HIDDEN :: u32(ext.Param_Info_Flag.HIDDEN)
 
 // Continuous parameters can be modulated; stepped ones only automated.
 FLAGS_CONTINUOUS :: FLAG_AUTOMATABLE | FLAG_MODULATABLE
 FLAGS_SWITCH :: FLAG_AUTOMATABLE | FLAG_STEPPED
 FLAGS_CHOICE :: FLAG_AUTOMATABLE | FLAG_STEPPED | FLAG_ENUM
+
+// Parameters that exist in the table but whose behaviour is not implemented yet.
+// CLAP documents IS_HIDDEN as precisely this case: "the parameter should not be shown to
+// the user, because it is currently not used". Without it a host's generic UI offers
+// controls that silently do nothing, which reads as a bug.
+//
+// Drop NOT_IMPLEMENTED from a parameter in the same change that makes it work.
+NOT_IMPLEMENTED :: FLAG_HIDDEN
 
 ON_OFF := []string{"Off", "On"}
 
@@ -107,13 +116,17 @@ PARAMS := [Param_Id]Param {
 		default = -18,
 		flags = FLAGS_CONTINUOUS,
 	},
+	// Defaults to 1:1 so the plugin is bit-transparent the moment it is inserted. At 1:1
+	// the gain computer returns its input unchanged at every level, so the applied gain is
+	// exactly 1.0 regardless of threshold or knee. Threshold stays at a musically useful
+	// -18 dB, so raising ratio is the single gesture that starts compression.
 	.Ratio = {
 		name = "Ratio",
 		module = "Compressor",
 		kind = .Ratio,
 		min = 1,
 		max = RATIO_MAX,
-		default = 4,
+		default = 1,
 		flags = FLAGS_CONTINUOUS,
 	},
 	.Knee = {
@@ -152,7 +165,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 1,
 		default = 0,
-		flags = FLAGS_SWITCH,
+		flags = FLAGS_SWITCH | NOT_IMPLEMENTED,
 		choices = ON_OFF,
 	},
 
@@ -184,7 +197,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 100,
 		default = 100,
-		flags = FLAGS_CONTINUOUS,
+		flags = FLAGS_CONTINUOUS | NOT_IMPLEMENTED,
 	},
 	.Channel_Mode = {
 		name = "Channel Mode",
@@ -193,7 +206,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = f64(len(Channel_Mode_Value) - 1),
 		default = f64(Channel_Mode_Value.Stereo),
-		flags = FLAGS_CHOICE,
+		flags = FLAGS_CHOICE | NOT_IMPLEMENTED,
 		choices = CHANNEL_MODE_CHOICES,
 	},
 	// Deliberately neither automatable nor modulatable. Changing lookahead changes the
@@ -218,7 +231,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = f64(len(Sidechain_Source_Value) - 1),
 		default = f64(Sidechain_Source_Value.Internal),
-		flags = FLAGS_CHOICE,
+		flags = FLAGS_CHOICE | NOT_IMPLEMENTED,
 		choices = SIDECHAIN_SOURCE_CHOICES,
 	},
 	.Sidechain_Highpass = {
@@ -228,7 +241,7 @@ PARAMS := [Param_Id]Param {
 		min = 20,
 		max = 500,
 		default = 20,
-		flags = FLAGS_CONTINUOUS,
+		flags = FLAGS_CONTINUOUS | NOT_IMPLEMENTED,
 	},
 	.Sidechain_Listen = {
 		name = "SC Listen",
@@ -237,7 +250,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 1,
 		default = 0,
-		flags = FLAGS_SWITCH,
+		flags = FLAGS_SWITCH | NOT_IMPLEMENTED,
 		choices = ON_OFF,
 	},
 
@@ -258,7 +271,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 1,
 		default = 0,
-		flags = FLAGS_SWITCH,
+		flags = FLAGS_SWITCH | NOT_IMPLEMENTED,
 		choices = ON_OFF,
 	},
 	.Mix = {
@@ -268,7 +281,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 100,
 		default = 100,
-		flags = FLAGS_CONTINUOUS,
+		flags = FLAGS_CONTINUOUS | NOT_IMPLEMENTED,
 	},
 	.Output_Trim = {
 		name = "Output Trim",

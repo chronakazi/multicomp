@@ -148,9 +148,19 @@ Two design points worth remembering:
   the host for a main-thread callback, announces `clap.latency changed`, and requests a
   restart. Automating that would thrash the host, so it is a setup control.
 
-Still not live, and correctly reported as such: sidechain routing/filtering, variable stereo
-link, mid-side, mix, auto-makeup, auto-release. Detection is fully linked across channels,
-which is exactly what Stereo Link = 100% (the default) means.
+Still not live: sidechain routing/filtering, variable stereo link, mid-side, mix,
+auto-makeup, auto-release. These 8 parameters are flagged `NOT_IMPLEMENTED`
+(`CLAP_PARAM_IS_HIDDEN`) so hosts do not offer controls that do nothing — 12 visible, 8
+hidden. Detection is fully linked across channels, which is exactly what Stereo Link = 100%
+means.
+
+**Post-Phase-3 fix, found in DAW testing.** Ratio defaulted to 4:1 with threshold −18 dB, so
+the plugin pulled ~9 dB off typical program material the moment it was inserted. The DSP was
+correct — measured output matched the static curve to 0.01 dB at every level — but a
+compressor must be transparent until the user asks for something. Ratio now defaults to 1:1,
+where the gain computer returns its input unchanged at every level and the applied gain is
+exactly 1.0. Threshold stays at −18 dB, so raising ratio is the single gesture that starts
+compression. Guarded by a transparency check in `tools/offline`.
 
 **Phase 4 — Routing features.** External sidechain audio port, SC high-pass and listen,
 stereo link, mid/side, mix, auto-makeup, auto-release.
