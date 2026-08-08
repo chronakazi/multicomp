@@ -1,0 +1,11 @@
+# Build output
+build/
+*.dylib
+*.so
+*.dll
+*.clap
+
+# Editor / OS debris
+.DS_Store
+*.sublime-workspace
+opencode.json
