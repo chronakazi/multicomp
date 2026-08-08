@@ -56,60 +56,6 @@ audio_ports_ext := ext.Plugin_Audio_Ports {
 }
 
 //
-// clap.state
-//
-// The format is deliberately trivial for Phase 0. Phase 1 replaces it with a versioned
-// encoding — a magic number and a version field first, so old sessions keep loading as
-// the parameter set grows.
-//
-
-state_ext := ext.Plugin_State {
-	save = proc "c" (plugin: ^clap.Plugin, stream: ^clap.Ostream) -> bool {
-		self := from_plugin(plugin)
-		value := self.gain_db
-		return write_full(stream, &value, size_of(f64))
-	},
-
-	load = proc "c" (plugin: ^clap.Plugin, stream: ^clap.Istream) -> bool {
-		self := from_plugin(plugin)
-		value: f64
-		if !read_full(stream, &value, size_of(f64)) {
-			return false
-		}
-		self.gain_db = value
-		return true
-	},
-}
-
-// Hosts may satisfy a read or write partially, so both directions have to loop.
-// The validator exercises this with deliberately tiny chunk sizes.
-write_full :: proc "contextless" (stream: ^clap.Ostream, data: rawptr, size: int) -> bool {
-	bytes := ([^]u8)(data)
-	written := 0
-	for written < size {
-		n := stream.write(stream, &bytes[written], u64(size - written))
-		if n <= 0 {
-			return false
-		}
-		written += int(n)
-	}
-	return true
-}
-
-read_full :: proc "contextless" (stream: ^clap.Istream, data: rawptr, size: int) -> bool {
-	bytes := ([^]u8)(data)
-	read := 0
-	for read < size {
-		n := stream.read(stream, &bytes[read], u64(size - read))
-		if n <= 0 {
-			return false // 0 is end of file, -1 is an error; both are failures here
-		}
-		read += int(n)
-	}
-	return true
-}
-
-//
 // clap.latency — zero until Phase 3 introduces the lookahead delay.
 //
 

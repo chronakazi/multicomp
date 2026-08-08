@@ -98,9 +98,17 @@ parameter, state save/load with correctly looped partial reads/writes, and sampl
 event splitting in `process`. Verified: `./build.sh --validate` →
 **21 tests, 15 passed, 0 failed, 6 skipped, 0 warnings.**
 
-**Phase 1 — Parameter system.** Full table above, `value_to_text`/`text_to_value` with real
-units (`-12.5 dB`, `4.0:1`, `∞:1`, `35 ms`), versioned state serialisation. Gate: the
-validator's `state-reproducibility-*` and `param-conversions` tests pass.
+**Phase 1 — Parameter system. ✅ DONE.** All 20 parameters above, as a `[Param_Id]Param`
+enumerated array so lookup is O(1) and the table cannot fall out of order. Real unit
+formatting and parsing (`-18.00 dB`, `4.0:1`, `∞:1`, `10.00 ms`, `20 Hz`, `100.0 %`,
+`Feed-Forward`, `Off`), and versioned state written as explicit `(id, value)` pairs.
+Verified: **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings** — `param-conversions`,
+`param-fuzz-basic` and all three `state-reproducibility-*` tests pass. Separately
+round-tripped every parameter at min/default/max through `value_to_text` →
+`text_to_value` with 0 failures.
+
+`process` still applies only bypass and the input/output trims; compression lands in
+Phases 2–3.
 
 **Phase 2 — DSP, headless.** All of `dsp/`, with `odin test` covering: static curve shape
 at known threshold/ratio/knee, attack/release time constants measured against a step input,

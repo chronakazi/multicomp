@@ -36,7 +36,8 @@ multicomp/
       entry.odin       descriptor, factory, exported clap_entry
       plugin.odin      Multicomp struct, lifecycle, process()
       params.odin      parameter table + clap.params
-      extensions.odin  audio-ports, state, latency, extension dispatch
+      state.odin       versioned state serialisation
+      extensions.odin  audio-ports, latency, extension dispatch
     dsp/             package dsp — pure DSP, no CLAP types, unit-testable
     gui/             (Phase 5) nanovg drawing + Cocoa view embedding
   clap-odin/         CLAP bindings — treat as a vendored dependency
@@ -101,8 +102,8 @@ MultiComp.clap/Contents/
 ```
 
 Validation is the gate — run it before claiming anything works. Current status:
-**21 tests, 15 passed, 0 failed, 6 skipped, 0 warnings.** The 6 skips are note-port
-tests, correctly skipped for an audio effect.
+**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings.** The 5 skips are note-port and
+preset-discovery tests, correctly skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
 check, because the very first `dlopen` of a new file pays for dyld mapping plus macOS's
@@ -200,6 +201,33 @@ a `strlen`, so keep it on the main thread, never in `process`.
 `[thread-safe]`. Honour them — the bindings preserve those comments from the C headers.
 Parameter values reach the DSP only through events (`process` and `flush`), never by the
 GUI writing shared state directly.
+
+## Adding a parameter
+
+`PARAMS` in [src/plugin/params.odin](src/plugin/params.odin) is a `[Param_Id]Param`
+enumerated array — indexed by the enum, so lookup is O(1) and an entry can never end up
+under the wrong id. To add one:
+
+1. Add a variant to `Param_Id`. **Append it at the end**, and never renumber existing ones.
+2. Add the matching `.Your_Param = { ... }` entry to `PARAMS`.
+3. If it is a `.Choice`, add its `enum` and its parallel `_CHOICES` string slice.
+
+That is the whole change — `count`, `get_info`, `get_value`, state save/load and the
+defaults all read from the table.
+
+State is written as explicit `(id, value)` pairs, not a positional array, so this is safe:
+an id an older build does not recognise is skipped on load, and a parameter missing from
+an older session keeps its default. Bump `STATE_VERSION` only when the *encoding* changes,
+not when parameters are added.
+
+Flag sets are pre-composed: `FLAGS_CONTINUOUS` (automatable + modulatable),
+`FLAGS_SWITCH` (automatable + stepped), `FLAGS_CHOICE` (+ `IS_ENUM`). Stepped values are
+rounded to integers in `clamp_param`, because hosts and our choice indexing have to agree
+on what the value means.
+
+Note that `clap-info` does not render the `IS_ENUM` flag at all — its flag vocabulary
+predates it. Absence there is not evidence the flag is missing; check the raw
+`Param_Info.flags` bits instead (`IS_ENUM` is bit 16, `0x10000`).
 
 ## Working agreements
 

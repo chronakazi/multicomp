@@ -55,12 +55,7 @@ factory := clap.Plugin_Factory {
 
 		self := new(Multicomp)
 		self.host = host
-
-		for param in PARAMS {
-			if param.id == .Gain {
-				self.gain_db = param.default
-			}
-		}
+		reset_to_defaults(self)
 
 		self.plugin = clap.Plugin {
 			desc             = &descriptor,

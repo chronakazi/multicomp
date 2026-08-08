@@ -5,9 +5,9 @@ import "base:runtime"
 import clap "proj:clap-odin"
 import "proj:src/dsp"
 
-// Phase 0 skeleton: a validating CLAP plugin with stereo ports, one parameter, and
-// state save/load. The gain parameter is a placeholder that proves the whole
-// host -> event -> DSP path works; Phase 1 replaces it with the real parameter table.
+// Phase 1: the full parameter set is in place and round-trips through state.
+// `process` currently applies only bypass and the input/output trims — the compression
+// itself lands in Phases 2 and 3, when dsp/ gains a real gain computer and envelope.
 
 Multicomp :: struct {
 	// Must stay first. The host only ever holds a ^clap.Plugin, and we cast back to
@@ -16,13 +16,19 @@ Multicomp :: struct {
 	host:        ^clap.Host,
 	sample_rate: f64,
 
-	// Placeholder parameter state, replaced in Phase 1.
-	gain_db:     f64,
+	// Current value of every parameter, indexed by Param_Id.
+	values:      [Param_Id]f64,
 }
 
 // Recover our own struct from the pointer the host handed back.
 from_plugin :: proc "contextless" (plugin: ^clap.Plugin) -> ^Multicomp {
 	return (^Multicomp)(plugin.plugin_data)
+}
+
+reset_to_defaults :: proc "contextless" (self: ^Multicomp) {
+	for param, id in PARAMS {
+		self.values[id] = param.default
+	}
 }
 
 init :: proc "c" (plugin: ^clap.Plugin) -> bool {
@@ -77,22 +83,35 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 			block_end = min(header.time, process.frames_count)
 		}
 
-		gain := f32(dsp.db_to_linear(self.gain_db))
-		input := &process.audio_inputs[0]
-		output := &process.audio_outputs[0]
-
-		for channel in 0 ..< input.channel_count {
-			src := input.data32[channel]
-			dst := output.data32[channel]
-			for i in frame ..< block_end {
-				dst[i] = src[i] * gain
-			}
-		}
-
+		process_block(self, process, frame, block_end)
 		frame = block_end
 	}
 
 	return .CONTINUE
+}
+
+process_block :: proc "contextless" (
+	self: ^Multicomp,
+	process: ^clap.Process,
+	start, end: u32,
+) {
+	input := &process.audio_inputs[0]
+	output := &process.audio_outputs[0]
+
+	bypassed := self.values[.Bypass] >= 0.5
+	gain: f32 = 1
+	if !bypassed {
+		trim := self.values[.Input_Trim] + self.values[.Output_Trim]
+		gain = f32(dsp.db_to_linear(trim))
+	}
+
+	for channel in 0 ..< input.channel_count {
+		src := input.data32[channel]
+		dst := output.data32[channel]
+		for i in start ..< end {
+			dst[i] = src[i] * gain
+		}
+	}
 }
 
 handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header) {
@@ -103,9 +122,11 @@ handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header
 	#partial switch clap.Event_Type(header.type) {
 	case .PARAM_VALUE:
 		event := (^clap.Event_Param_Value)(header)
-		if event.param_id == u32(Param_Id.Gain) {
-			self.gain_db = event.value
+		if !is_valid_param(event.param_id) {
+			return
 		}
+		id := Param_Id(event.param_id)
+		self.values[id] = clamp_param(id, event.value)
 	}
 }
 
