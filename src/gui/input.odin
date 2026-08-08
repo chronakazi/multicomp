@@ -59,6 +59,7 @@ ensure_view_class :: proc() -> NS.Class {
 	NS.class_addMethod(cls, NS.sel_registerName("mouseUp:"), auto_cast on_mouse_up, "v@:@")
 	NS.class_addMethod(cls, NS.sel_registerName("isFlipped"), auto_cast is_flipped, "B@:")
 	NS.class_addMethod(cls, NS.sel_registerName("acceptsFirstMouse:"), auto_cast accepts_first_mouse, "B@:@")
+	NS.class_addMethod(cls, NS.sel_registerName("tick:"), auto_cast on_tick, "v@:@")
 
 	NS.objc_registerClassPair(cls)
 	panel_class = cls
@@ -115,6 +116,15 @@ click_count :: proc "c" (event: NS.id) -> int {
 }
 
 @(private = "file")
+on_tick :: proc "c" (self: NS.id, cmd: NS.SEL, timer: NS.id) {
+	context = runtime.default_context()
+	g := gui_of(self)
+	if g != nil {
+		tick_fallback(g)
+	}
+}
+
+@(private = "file")
 on_mouse_down :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 	context = runtime.default_context()
 	g := gui_of(self)
@@ -140,6 +150,7 @@ on_mouse_down :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 			g.bridge.end_edit(g.bridge.user, param)
 		}
 		g.drag.control = -1
+		render(g)
 		return
 	}
 
@@ -159,6 +170,11 @@ on_mouse_down :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 		g.drag.editing = true
 		g.bridge.begin_edit(g.bridge.user, param)
 	}
+
+	// Repaint now rather than waiting for a tick. During a drag the run loop is in event
+	// tracking mode, where a default-mode timer does not fire at all, so this is the only
+	// thing that makes a knob follow the mouse.
+	render(g)
 }
 
 @(private = "file")
@@ -180,6 +196,7 @@ on_mouse_dragged :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 
 	value := clamp(g.drag.start_value + f64(travel), 0, 1)
 	g.bridge.edit(g.bridge.user, control.param, value)
+	render(g)
 }
 
 @(private = "file")
@@ -194,4 +211,5 @@ on_mouse_up :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 	}
 	g.drag.editing = false
 	g.drag.control = -1
+	render(g)
 }

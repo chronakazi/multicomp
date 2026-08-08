@@ -318,6 +318,11 @@ predates it. Absence there is not evidence the flag is missing; check the raw
   them. Always call `request_flush` after queueing, or edits stall on a stopped transport.
 - Adding a parameter means adding it to **both** `PARAMS` and `gui.CONTROLS`; the ids in
   `gui/layout.odin` mirror `Param_Id`. `./build.sh --gui` asserts the counts match.
+- **Never rely on `clap.timer-support` alone for repainting.** It is optional, and a host
+  may register a timer and then never tick it, which leaves a correct panel frozen on its
+  first frame. `gui/` keeps a run-loop `NSTimer` fallback that stands down while host ticks
+  are arriving, and every interaction repaints directly — a default-mode timer does not
+  fire at all while the mouse is being tracked.
 - Tests live in the same package (`dsp_test.odin`). Confirmed cheap: `@(test)` procs and
   the `core:testing` import add ~1 KB to the shipped dylib.
 - Enums the DSP switches on (`Detector_Mode`, `Topology_Mode`) are defined in `dsp/` and

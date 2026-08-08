@@ -246,6 +246,14 @@ records it as automation.
 Interaction: drag a knob vertically, shift for fine, double-click to reset. Buttons,
 toggles and the selector advance on press.
 
+**Post-Phase-6 fix, found in DAW testing.** Controls changed the host's parameters but the
+panel never moved. The drawing was correct — a guicheck that renders twice with different
+values confirmed 3042 pixels differ — so the fault was the repaint trigger: the host was
+not ticking `clap.timer-support`. Repainting no longer depends on it. Every interaction
+repaints directly, which is required regardless because a default-mode run-loop timer does
+not fire while the mouse is being tracked, and a run-loop `NSTimer` covers idle metering,
+standing down whenever host ticks are arriving.
+
 Verified: validator **21/16 passed/0 failed/0 warnings**, **27** DSP tests, **33** offline
 audio checks, **4** plugin tests covering the ring buffer's ordering, wrap-around and
 full-queue behaviour, and **21** GUI checks — every control on the faceplate, every one

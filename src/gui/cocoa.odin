@@ -23,6 +23,11 @@ Event :: struct {
 	using _: NS.Object,
 }
 
+@(objc_class = "NSTimer")
+Timer :: struct {
+	using _: NS.Object,
+}
+
 @(objc_class = "NSOpenGLPixelFormat")
 Pixel_Format :: struct {
 	using _: NS.Object,
@@ -141,6 +146,27 @@ view_backing_scale :: proc "c" (self: ^NS.View) -> f32 {
 	}
 	scale := intrinsics.objc_send(NS.Float, (^NS.Object)(window), "backingScaleFactor")
 	return scale > 0 ? f32(scale) : 1
+}
+
+// Scheduled on the current run loop in the default mode. That mode does not fire while
+// the mouse is being tracked, which is fine: a drag repaints itself directly.
+timer_schedule :: proc "c" (target: ^NS.View, selector: NS.SEL, interval: f64) -> ^Timer {
+	return intrinsics.objc_send(
+		^Timer,
+		Timer,
+		"scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:",
+		NS.Float(interval),
+		target,
+		selector,
+		(^NS.Object)(nil),
+		NS.BOOL(true),
+	)
+}
+
+timer_invalidate :: proc "c" (timer: ^Timer) {
+	if timer != nil {
+		intrinsics.objc_send(nil, timer, "invalidate")
+	}
 }
 
 release :: proc "c" (object: rawptr) {

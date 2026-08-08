@@ -141,7 +141,7 @@ timer_ext := ext.Plugin_Timer_Support {
 		context = runtime.default_context()
 		self := from_plugin(plugin)
 		if self.timer_running && timer_id == self.timer_id {
-			gui.render(&self.ui)
+			gui.tick_from_host(&self.ui)
 		}
 	},
 }

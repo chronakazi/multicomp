@@ -226,6 +226,33 @@ main :: proc() {
 	check("every control is clickable", hits == len(gui.CONTROLS), fmt.tprintf("%d of %d", hits, len(gui.CONTROLS)))
 	check("empty faceplate is not clickable", gui.hit_test(620, 300) < 0)
 
+	// Re-render with different values and confirm the pixels actually change. If the panel
+	// draws the same picture whatever the parameters say, the fault is in the drawing; if
+	// it changes here, the fault is in whatever is meant to trigger a repaint.
+	stub_offset = 4
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
+	nvg.BeginFrame(vg, W, H, 1)
+	gui.draw_panel(vg)
+	gui.draw_controls(&ui)
+	nvg.EndFrame(vg)
+
+	moved := make([]u8, W * H * 4)
+	defer delete(moved)
+	gl.ReadPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(moved))
+
+	differing := 0
+	for i := 0; i < len(pixels); i += 4 {
+		if pixels[i] != moved[i] {
+			differing += 1
+		}
+	}
+	check(
+		"panel redraws when values change",
+		differing > 2000,
+		fmt.tprintf("%d pixels differ", differing),
+	)
+	stub_offset = 0
+
 	// Nothing should be pure black: that would mean an area was never drawn.
 	black := 0
 	for y in 0 ..< H {
@@ -285,9 +312,11 @@ main :: proc() {
 // Stub plugin
 //
 
+stub_offset := u32(0)
+
 stub_value :: proc(param: u32) -> f64 {
 	// Spread the controls out so a stuck-at-zero bug is visible in the render.
-	return f64((param * 7) % 10) / 9
+	return f64(((param + stub_offset) * 7) % 10) / 9
 }
 
 stub_bridge :: proc() -> gui.Bridge {

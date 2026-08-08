@@ -32,6 +32,29 @@ Gui :: struct {
 	fonts_ok:   bool,
 	bridge:     Bridge,
 	drag:       Drag,
+
+	// Repaint is driven by the host's clap.timer-support when it has one. Not every host
+	// does, and a host may register a timer and then never tick it — which leaves a
+	// perfectly correct panel frozen on its first frame. `fallback_timer` covers that,
+	// standing down whenever host ticks are actually arriving.
+	host_ticks:     u32,
+	seen_ticks:     u32,
+	fallback_timer: ^Timer,
+}
+
+// Driven by clap.timer-support.
+tick_from_host :: proc(g: ^Gui) {
+	g.host_ticks += 1
+	render(g)
+}
+
+// Driven by our own run-loop timer.
+tick_fallback :: proc(g: ^Gui) {
+	if g.host_ticks != g.seen_ticks {
+		g.seen_ticks = g.host_ticks // the host is driving; one repaint a frame is enough
+		return
+	}
+	render(g)
 }
 
 // Builds the view and GL context. The context has no drawable until `attach` gives it a
@@ -88,7 +111,14 @@ create :: proc(g: ^Gui) -> bool {
 	return true
 }
 
+// 60 Hz, matching the host timer we ask for.
+FALLBACK_TIMER_S :: 1.0 / 60.0
+
 destroy :: proc(g: ^Gui) {
+	// Invalidate before releasing the view: NSTimer retains its target.
+	timer_invalidate(g.fallback_timer)
+	g.fallback_timer = nil
+
 	if g.vg != nil {
 		// Deleting GL objects requires the context that owns them to be current.
 		if g.gl_context != nil {
@@ -125,6 +155,10 @@ attach :: proc(g: ^Gui, parent: rawptr) -> bool {
 	}
 
 	NS.View_addSubview((^NS.View)(parent), g.view)
+
+	if g.fallback_timer == nil {
+		g.fallback_timer = timer_schedule(g.view, NS.sel_registerName("tick:"), FALLBACK_TIMER_S)
+	}
 	// Only meaningful once the view is in a window, which is why it happens here rather
 	// than in create().
 	gl_context_set_view(g.gl_context, g.view)
