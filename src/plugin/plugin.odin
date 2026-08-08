@@ -6,6 +6,7 @@ import "base:runtime"
 import clap "proj:clap-odin"
 import ext "proj:clap-odin/ext"
 import "proj:src/dsp"
+import "proj:src/gui"
 
 // The compressor. Events are applied sample-accurately, gain staging is smoothed, and the
 // signal path runs: sidechain selection -> mid/side encode -> high-pass -> detection ->
@@ -61,6 +62,22 @@ Multicomp :: struct {
 	// block does not pay for exp() and trig on every event boundary.
 	auto_makeup_db:    f64,
 	cached:            Derived_Config,
+
+	// GUI. Main-thread only, and entirely optional: the plugin processes audio whether or
+	// not a window has ever been opened.
+	ui:                gui.Gui,
+	host_timer:        ^ext.Host_Timer_Support,
+	host_params:       ^ext.Host_Params,
+	timer_id:          clap.Clap_Id,
+	timer_running:     bool,
+
+	// GUI -> audio. Edits cross here, then leave on out_events so the host records them.
+	ui_queue:          Ui_Queue,
+
+	// audio -> GUI. f64 bits, written atomically by the audio thread.
+	mirror:            [Param_Id]u64,
+	meter_gr:          u64,
+	meter_out:         u64,
 }
 
 // The parameter values the expensive coefficient updates depend on.
@@ -81,6 +98,94 @@ reset_to_defaults :: proc "contextless" (self: ^Multicomp) {
 	for param, id in PARAMS {
 		self.values[id] = param.default
 	}
+	publish_values(self)
+}
+
+// Mirrors the authoritative values where the GUI can read them without racing the audio
+// thread. Cheap enough to do once per block.
+publish_values :: proc "contextless" (self: ^Multicomp) {
+	for _, id in PARAMS {
+		publish(&self.mirror[id], self.values[id])
+	}
+}
+
+// Drains GUI edits, applies them, and echoes them to the host so a knob move is recorded
+// as automation. Called from both process() and flush().
+drain_ui :: proc "contextless" (self: ^Multicomp, out_events: ^clap.Output_Events) {
+	for {
+		event, ok := ui_queue_pop(&self.ui_queue)
+		if !ok {
+			break
+		}
+
+		switch event.kind {
+		case .Value:
+			if is_valid_param(event.param) {
+				id := Param_Id(event.param)
+				self.values[id] = clamp_param(id, event.value)
+				if id == .Lookahead {
+					request_latency_update(self)
+				}
+			}
+			push_param_value(out_events, event.param, event.value)
+
+		case .Gesture_Begin:
+			push_gesture(out_events, event.param, .PARAM_GESTURE_BEGIN)
+
+		case .Gesture_End:
+			push_gesture(out_events, event.param, .PARAM_GESTURE_END)
+		}
+	}
+}
+
+@(private = "file")
+push_param_value :: proc "contextless" (
+	out_events: ^clap.Output_Events,
+	param: clap.Clap_Id,
+	value: f64,
+) {
+	if out_events == nil || out_events.try_push == nil {
+		return
+	}
+	event := clap.Event_Param_Value {
+		header = {
+			size = size_of(clap.Event_Param_Value),
+			time = 0,
+			space_id = clap.CORE_EVENT_SPACE_ID,
+			type = u16(clap.Event_Type.PARAM_VALUE),
+			flags = 0,
+		},
+		param_id = param,
+		cookie = nil,
+		note_id = -1,
+		port_index = -1,
+		channel = -1,
+		key = -1,
+		value = value,
+	}
+	out_events.try_push(out_events, &event.header)
+}
+
+@(private = "file")
+push_gesture :: proc "contextless" (
+	out_events: ^clap.Output_Events,
+	param: clap.Clap_Id,
+	type: clap.Event_Type,
+) {
+	if out_events == nil || out_events.try_push == nil {
+		return
+	}
+	event := clap.Event_Param_Gesture {
+		header = {
+			size = size_of(clap.Event_Param_Gesture),
+			time = 0,
+			space_id = clap.CORE_EVENT_SPACE_ID,
+			type = u16(type),
+			flags = 0,
+		},
+		param_id = param,
+	}
+	out_events.try_push(out_events, &event.header)
 }
 
 // Lookahead expressed in samples at the current sample rate.
@@ -100,7 +205,14 @@ init :: proc "c" (plugin: ^clap.Plugin) -> bool {
 		self.host_latency = (^ext.Host_Latency)(
 			self.host.get_extension(self.host, ext.EXT_LATENCY),
 		)
+		self.host_timer = (^ext.Host_Timer_Support)(
+			self.host.get_extension(self.host, ext.EXT_TIMER_SUPPORT),
+		)
+		self.host_params = (^ext.Host_Params)(
+			self.host.get_extension(self.host, ext.EXT_PARAMS),
+		)
 	}
+	publish_values(self)
 	return true
 }
 
@@ -269,9 +381,13 @@ band_set_detector :: proc "contextless" (self: ^Multicomp, mode: dsp.Detector_Mo
 process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Process_Status {
 	self := from_plugin(plugin)
 
+	// GUI edits first, so a knob move applies to this block rather than the next one.
+	drain_ui(self, process.out_events)
+
 	event_count := process.in_events.size(process.in_events)
 	next_event: u32 = 0
 	frame: u32 = 0
+	peak_out := 0.0
 
 	// Split the block at every event boundary so parameter changes land on the exact
 	// sample the host asked for, rather than all at once at the start of the block.
@@ -292,19 +408,43 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 			block_end = min(header.time, process.frames_count)
 		}
 
-		process_block(self, process, frame, block_end)
+		peak_out = max(peak_out, process_block(self, process, frame, block_end))
 		frame = block_end
 	}
 
+	publish_meters(self, peak_out)
+	publish_values(self)
 	return .CONTINUE
 }
 
-process_block :: proc "contextless" (self: ^Multicomp, process: ^clap.Process, start, end: u32) {
+// Meter ballistics: rise instantly, fall smoothly, so a peak is visible but the display
+// does not flicker. Decay is per block, which is close enough for a meter.
+METER_DECAY :: 0.82
+
+publish_meters :: proc "contextless" (self: ^Multicomp, peak_out: f64) {
+	gr := -self.bands[0].channels[0].last_gain_db
+	previous_gr := read_published(&self.meter_gr)
+	publish(&self.meter_gr, max(gr, previous_gr * METER_DECAY))
+
+	out_db := dsp.linear_to_db(peak_out)
+	previous_out := read_published(&self.meter_out)
+	decayed := previous_out <= dsp.SILENCE_DB ? dsp.SILENCE_DB : previous_out - 3
+	publish(&self.meter_out, max(out_db, decayed))
+}
+
+// Returns the peak output magnitude over the block, for metering.
+process_block :: proc "contextless" (
+	self: ^Multicomp,
+	process: ^clap.Process,
+	start, end: u32,
+) -> f64 {
 	input := &process.audio_inputs[0]
 	output := &process.audio_outputs[0]
 	if input.data32 == nil || output.data32 == nil {
-		return
+		return 0
 	}
+
+	peak := 0.0
 
 	channels := min(int(input.channel_count), int(output.channel_count), MAX_CHANNELS)
 	band := &self.bands[0]
@@ -367,6 +507,7 @@ process_block :: proc "contextless" (self: ^Multicomp, process: ^clap.Process, s
 		if bypassed {
 			for channel in 0 ..< channels {
 				output.data32[channel][i] = f32(dry[channel])
+				peak = max(peak, abs(dry[channel]))
 			}
 			continue
 		}
@@ -374,7 +515,9 @@ process_block :: proc "contextless" (self: ^Multicomp, process: ^clap.Process, s
 		// Auditioning the detector: hear exactly what the compressor is reacting to.
 		if listening {
 			for channel in 0 ..< channels {
-				output.data32[channel][i] = f32(detector[channel] * output_trim)
+				value := detector[channel] * output_trim
+				output.data32[channel][i] = f32(value)
+				peak = max(peak, abs(value))
 			}
 			continue
 		}
@@ -398,10 +541,13 @@ process_block :: proc "contextless" (self: ^Multicomp, process: ^clap.Process, s
 		// signal is already latency-aligned with the wet one - blending them cannot
 		// produce the comb filtering that an uncompensated dry path would.
 		for channel in 0 ..< channels {
-			blended := dry[channel] + (wet[channel] - dry[channel]) * mix
-			output.data32[channel][i] = f32(blended * output_trim)
+			blended := (dry[channel] + (wet[channel] - dry[channel]) * mix) * output_trim
+			output.data32[channel][i] = f32(blended)
+			peak = max(peak, abs(blended))
 		}
 	}
+
+	return peak
 }
 
 handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header) {

@@ -1,0 +1,267 @@
+package plugin
+
+import "base:runtime"
+
+import clap "proj:clap-odin"
+import ext "proj:clap-odin/ext"
+import "proj:src/dsp"
+import "proj:src/gui"
+
+// clap.gui, plus the host timer that drives repainting.
+//
+// Every callback here is [main-thread]; none of it may touch DSP state directly. From
+// Phase 6, parameter edits will travel to the audio thread as events, the same way the
+// host's own automation does.
+
+// 60 Hz. The host owns the timer, so we never run a thread of our own — one less thing to
+// tear down correctly when a DAW closes the window at an awkward moment.
+GUI_TIMER_MS :: 16
+
+gui_ext := ext.Plugin_Gui {
+	is_api_supported = proc "c" (plugin: ^clap.Plugin, api: cstring, is_floating: bool) -> bool {
+		context = runtime.default_context()
+		// Embedded Cocoa only: a floating window would be the host's to manage.
+		return string(api) == ext.WINDOW_API_COCOA && !is_floating
+	},
+
+	get_preferred_api = proc "c" (
+		plugin: ^clap.Plugin,
+		api: ^cstring,
+		is_floating: ^bool,
+	) -> bool {
+		api^ = ext.WINDOW_API_COCOA
+		is_floating^ = false
+		return true
+	},
+
+	create = proc "c" (plugin: ^clap.Plugin, api: cstring, is_floating: bool) -> bool {
+		context = runtime.default_context()
+		if string(api) != ext.WINDOW_API_COCOA || is_floating {
+			return false
+		}
+
+		self := from_plugin(plugin)
+		self.ui.bridge = make_bridge(self)
+		if !gui.create(&self.ui) {
+			return false
+		}
+
+		// Ask the host to tick us. If it does not support timers the window still opens,
+		// it simply will not animate — better than refusing to show at all.
+		if self.host_timer != nil && self.host_timer.register_timer != nil {
+			if self.host_timer.register_timer(self.host, GUI_TIMER_MS, &self.timer_id) {
+				self.timer_running = true
+			}
+		}
+		return true
+	},
+
+	destroy = proc "c" (plugin: ^clap.Plugin) {
+		context = runtime.default_context()
+		self := from_plugin(plugin)
+
+		if self.timer_running && self.host_timer != nil && self.host_timer.unregister_timer != nil {
+			self.host_timer.unregister_timer(self.host, self.timer_id)
+		}
+		self.timer_running = false
+
+		gui.destroy(&self.ui)
+	},
+
+	set_scale = proc "c" (plugin: ^clap.Plugin, scale: f64) -> bool {
+		self := from_plugin(plugin)
+		self.ui.scale = f32(scale)
+		return true
+	},
+
+	get_size = proc "c" (plugin: ^clap.Plugin, width, height: ^u32) -> bool {
+		width^ = gui.WIDTH
+		height^ = gui.HEIGHT
+		return true
+	},
+
+	// Fixed size until Phase 8. Saying so plainly keeps hosts from drawing resize grips
+	// that do nothing.
+	can_resize = proc "c" (plugin: ^clap.Plugin) -> bool {
+		return false
+	},
+
+	get_resize_hints = proc "c" (plugin: ^clap.Plugin, hints: ^ext.Gui_Resize_Hints) -> bool {
+		return false
+	},
+
+	adjust_size = proc "c" (plugin: ^clap.Plugin, width, height: ^u32) -> bool {
+		width^ = gui.WIDTH
+		height^ = gui.HEIGHT
+		return true
+	},
+
+	set_size = proc "c" (plugin: ^clap.Plugin, width, height: u32) -> bool {
+		// Not resizable, so only the one size is acceptable.
+		return width == gui.WIDTH && height == gui.HEIGHT
+	},
+
+	set_parent = proc "c" (plugin: ^clap.Plugin, window: ^ext.Window) -> bool {
+		context = runtime.default_context()
+		if window == nil {
+			return false
+		}
+		self := from_plugin(plugin)
+		return gui.attach(&self.ui, window.cocoa)
+	},
+
+	set_transient = proc "c" (plugin: ^clap.Plugin, window: ^ext.Window) -> bool {
+		return false // embedded only
+	},
+
+	suggest_title = proc "c" (plugin: ^clap.Plugin, title: cstring) {},
+
+	show = proc "c" (plugin: ^clap.Plugin) -> bool {
+		context = runtime.default_context()
+		self := from_plugin(plugin)
+		gui.set_visible(&self.ui, true)
+		gui.render(&self.ui) // paint immediately rather than waiting for the first tick
+		return true
+	},
+
+	hide = proc "c" (plugin: ^clap.Plugin) -> bool {
+		context = runtime.default_context()
+		self := from_plugin(plugin)
+		gui.set_visible(&self.ui, false)
+		return true
+	},
+}
+
+//
+// clap.timer-support
+//
+
+timer_ext := ext.Plugin_Timer_Support {
+	on_timer = proc "c" (plugin: ^clap.Plugin, timer_id: clap.Clap_Id) {
+		context = runtime.default_context()
+		self := from_plugin(plugin)
+		if self.timer_running && timer_id == self.timer_id {
+			gui.render(&self.ui)
+		}
+	},
+}
+
+
+//
+// The bridge the panel talks to
+//
+
+make_bridge :: proc(self: ^Multicomp) -> gui.Bridge {
+	return gui.Bridge {
+		user = self,
+		normalized = proc(user: rawptr, param: u32) -> f64 {
+			self := (^Multicomp)(user)
+			if !is_valid_param(param) {
+				return 0
+			}
+			id := Param_Id(param)
+			p := PARAMS[id]
+			value := read_published(&self.mirror[id])
+			if p.max <= p.min {
+				return 0
+			}
+			return clamp((value - p.min) / (p.max - p.min), 0, 1)
+		},
+
+		text = proc(user: rawptr, param: u32, buffer: []u8) -> string {
+			self := (^Multicomp)(user)
+			if !is_valid_param(param) {
+				return ""
+			}
+			id := Param_Id(param)
+			return format_param(PARAMS[id], read_published(&self.mirror[id]), buffer)
+		},
+
+		choice = proc(user: rawptr, param: u32) -> int {
+			self := (^Multicomp)(user)
+			if !is_valid_param(param) {
+				return 0
+			}
+			id := Param_Id(param)
+			return choice_index(PARAMS[id], read_published(&self.mirror[id]))
+		},
+
+		choices = proc(user: rawptr, param: u32) -> int {
+			if !is_valid_param(param) {
+				return 2
+			}
+			p := PARAMS[Param_Id(param)]
+			if len(p.choices) > 0 {
+				return len(p.choices)
+			}
+			return int(p.max - p.min) + 1
+		},
+
+		begin_edit = proc(user: rawptr, param: u32) {
+			self := (^Multicomp)(user)
+			ui_queue_push(&self.ui_queue, {kind = .Gesture_Begin, param = param})
+			request_flush(self)
+		},
+
+		edit = proc(user: rawptr, param: u32, normalized: f64) {
+			self := (^Multicomp)(user)
+			if !is_valid_param(param) {
+				return
+			}
+			id := Param_Id(param)
+			p := PARAMS[id]
+			value := clamp_param(id, p.min + normalized * (p.max - p.min))
+
+			// Publish immediately so the knob tracks the mouse even when the host is not
+			// processing audio; the audio thread will land on the same value.
+			publish(&self.mirror[id], value)
+			ui_queue_push(&self.ui_queue, {kind = .Value, param = param, value = value})
+			request_flush(self)
+		},
+
+		end_edit = proc(user: rawptr, param: u32) {
+			self := (^Multicomp)(user)
+			ui_queue_push(&self.ui_queue, {kind = .Gesture_End, param = param})
+			request_flush(self)
+		},
+
+		reset = proc(user: rawptr, param: u32) {
+			self := (^Multicomp)(user)
+			if !is_valid_param(param) {
+				return
+			}
+			id := Param_Id(param)
+			value := PARAMS[id].default
+			publish(&self.mirror[id], value)
+			ui_queue_push(&self.ui_queue, {kind = .Value, param = param, value = value})
+			request_flush(self)
+		},
+
+		meter = proc(user: rawptr, kind: gui.Meter_Kind) -> f64 {
+			self := (^Multicomp)(user)
+			switch kind {
+			case .Gain_Reduction:
+				return read_published(&self.meter_gr)
+			case .Output:
+				return read_published(&self.meter_out)
+			}
+			return 0
+		},
+
+		curve = proc(user: rawptr, input_db: f64) -> f64 {
+			self := (^Multicomp)(user)
+			// Sampled from the band's own gain computer, so the window can never show a
+			// curve the DSP is not applying.
+			return dsp.gain_computer_output_db(self.bands[0].computer, input_db)
+		},
+	}
+}
+
+// A parameter edit is useless until the audio thread drains it, and a host that is idle
+// may not call process() at all. clap.params.request_flush is the documented way to ask
+// for a flush; without it, moving a knob on a stopped transport would do nothing.
+request_flush :: proc(self: ^Multicomp) {
+	if self.host_params != nil && self.host_params.request_flush != nil {
+		self.host_params.request_flush(self.host)
+	}
+}

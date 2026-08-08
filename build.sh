@@ -4,6 +4,8 @@
 #
 #   ./build.sh                 build the bundle
 #   ./build.sh --validate      build, then run the official CLAP validator
+#   ./build.sh --offline       build, then measure real audio through the plugin
+#   ./build.sh --gui           build, then render the faceplate headlessly and check it
 #   ./build.sh --install       build, then symlink into ~/Library/Audio/Plug-Ins/CLAP
 #   ./build.sh --debug         build with debug symbols
 #
@@ -24,6 +26,7 @@ CLAP_DIR="$HOME/Library/Audio/Plug-Ins/CLAP"
 do_validate=0
 do_install=0
 do_offline=0
+do_gui=0
 odin_flags=(-o:speed)
 
 for arg in "$@"; do
@@ -31,6 +34,7 @@ for arg in "$@"; do
 	--validate) do_validate=1 ;;
 	--install) do_install=1 ;;
 	--offline) do_offline=1 ;;
+	--gui) do_gui=1 ;;
 	--debug) odin_flags=(-debug) ;;
 	*)
 		echo "unknown flag: $arg" >&2
@@ -97,6 +101,13 @@ if [[ $do_offline -eq 1 ]]; then
 		-collection:proj="$ROOT" \
 		-out:"$BUILD_DIR/offline" \
 		-- "$BUNDLE/Contents/MacOS/$NAME"
+fi
+
+if [[ $do_gui -eq 1 ]]; then
+	echo "==> GUI checks"
+	odin run "$ROOT/tools/guicheck" \
+		-collection:proj="$ROOT" \
+		-out:"$BUILD_DIR/guicheck"
 fi
 
 if [[ $do_install -eq 1 ]]; then

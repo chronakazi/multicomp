@@ -38,7 +38,10 @@ multicomp/
       plugin.odin      Multicomp struct, lifecycle, process()
       params.odin      parameter table + clap.params
       state.odin       versioned state serialisation
-      extensions.odin  audio-ports, latency, extension dispatch
+      extensions.odin  audio-ports, latency, tail, extension dispatch
+      gui.odin         clap.gui + timer-support + the bridge implementation
+      ui_queue.odin    SPSC ring: GUI edits in, atomic mirror out
+      ui_queue_test.odin  @(test) procs, run with `odin test src/plugin`
     dsp/             package dsp — pure DSP, no CLAP types, unit-testable
       db.odin          dB conversions, one_pole_coeff
       gain_computer.odin  static curve with quadratic soft knee
@@ -49,9 +52,22 @@ multicomp/
       stereo.odin      lossless mid-side encode/decode
       band.odin        Compressor_Band — per-channel state, stereo link, multiband seam
       dsp_test.odin    @(test) procs, run with `odin test src/dsp`
-    gui/             (Phase 5) nanovg drawing + Cocoa view embedding
+    gui/             package gui — Cocoa view + GL context + nanovg, no CLAP types
+      cocoa.odin       NSOpenGLContext/PixelFormat/NSEvent bindings, NSView helpers
+      gl_loader.odin   resolves GL entry points from OpenGL.framework at runtime
+      gui.odin         view/context lifecycle, render loop
+      bridge.odin      the vtable plugin/ fills in — keeps CLAP out of this package
+      layout.odin      control table: where every widget sits, and hit testing
+      widgets.odin     knob, button, toggle, selector, meter ladders
+      draw.odin        header, bay legends, transfer window, meters
+      input.odin       runtime NSView subclass, mouse handling, drag
+      font.odin        system font loading with fallbacks
+      panel.odin       chassis: cheeks, faceplate, engraved divisions
+  design/
+    panel.html       the approved faceplate design — the GUI spec, 1180x460
   tools/
     offline/         offline CLAP host for measuring real audio (./build.sh --offline)
+    guicheck/        renders the faceplate headlessly and checks pixels (--gui)
   clap-odin/         CLAP bindings — treat as a vendored dependency
     *.odin           package clap  — core API + factories
     ext/*.odin       package ext   — stable extensions
@@ -88,11 +104,18 @@ Typecheck the bindings (all three must be silent):
 odin check clap-odin -no-entry-point && odin check clap-odin/ext -no-entry-point && odin check clap-odin/ext/draft -no-entry-point
 ```
 
-Run the DSP test suite (no CLAP involved, so it is fast to iterate on):
+Run the test suites:
 
 ```bash
 odin test src/dsp
 ```
+
+```bash
+odin test src/plugin -collection:proj=/Users/gmb/code/foesoft/multicomp
+```
+
+`src/dsp` needs no collection because it has no CLAP dependency, which is the point of
+keeping it that way.
 
 Build, bundle, validate and install all go through `build.sh`:
 
@@ -106,6 +129,11 @@ validator does not: that the gain reduction matches the static curve at known se
 that bypass is transparent, and that the impulse delay equals the reported latency. Use it
 whenever DSP behaviour changes. It resolves parameters **by name**, so reordering
 `Param_Id` cannot silently invalidate the checks.
+
+`--gui` runs [tools/guicheck](tools/guicheck), which makes the GL context current with no
+view attached, renders the faceplate into a framebuffer object and reads the pixels back.
+clap-validator never opens a window, so without this the whole Cocoa/GL/nanovg chain would
+be unproven until it worked or crashed inside a DAW. It also writes `build/panel.png`.
 
 `--install` symlinks the bundle into `~/Library/Audio/Plug-Ins/CLAP/` (a symlink, so
 rebuilds are picked up without reinstalling). `--debug` swaps `-o:speed` for `-debug`.
@@ -127,8 +155,8 @@ MultiComp.clap/Contents/
 ```
 
 Validation is the gate — run it before claiming anything works. Current status:
-**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests and **33**
-offline audio checks. The 5 skips are note-port and preset-discovery tests, correctly
+**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **4**
+plugin tests, **33** offline audio checks and **21** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
@@ -274,15 +302,22 @@ predates it. Absence there is not evidence the flag is missing; check the raw
 ## Working agreements
 
 - `clap-validator validate` must pass with **0 failures and 0 warnings**, `odin test src/dsp`
-  must be fully green, and `./build.sh --offline` must report all checks passed, before any
-  change is called done. Report the actual counts.
+  must be fully green, and `./build.sh --offline --gui` must report all checks passed,
+  before any change is called done. Report the actual counts.
 - Latency must stay constant while active — CLAP requires it. Anything that changes latency
   latches at `activate` and asks the host for a restart from `on_main_thread`; it must not
   be automatable.
 - No allocation, locks, file or console I/O in `process()` or below. `src/dsp/` is
   `proc "contextless"` throughout, which makes this a compile error rather than a dropout.
 - DSP in `src/dsp/` stays free of CLAP types so it can be tested with `odin test`. If a
-  compressor change needs a CLAP type, it belongs in `plugin/`.
+  compressor change needs a CLAP type, it belongs in `plugin/`. `src/gui/` follows the same
+  rule: `plugin/gui.odin` translates clap.gui calls into plain entry points.
+- The GUI is **main-thread only**. Parameter edits must reach the DSP as events, never by
+  the GUI writing shared state — they go through the SPSC ring in `plugin/ui_queue.odin`,
+  get applied in `process`/`flush`, and are echoed on `out_events` so the host records
+  them. Always call `request_flush` after queueing, or edits stall on a stopped transport.
+- Adding a parameter means adding it to **both** `PARAMS` and `gui.CONTROLS`; the ids in
+  `gui/layout.odin` mirror `Param_Id`. `./build.sh --gui` asserts the counts match.
 - Tests live in the same package (`dsp_test.odin`). Confirmed cheap: `@(test)` procs and
   the `core:testing` import add ~1 KB to the shipped dylib.
 - Enums the DSP switches on (`Detector_Mode`, `Topology_Mode`) are defined in `dsp/` and

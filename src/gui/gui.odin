@@ -1,0 +1,187 @@
+package gui
+
+// The plugin window: a child NSView under the host's parent view, with an OpenGL context
+// and nanovg drawing into it.
+//
+// This package owns no CLAP types. `plugin/gui.odin` translates clap.gui calls into the
+// handful of entry points below, which keeps the Cocoa and GL work testable in isolation
+// and mirrors how dsp/ is kept free of CLAP.
+//
+// Everything here is main-thread only. CLAP marks the whole of clap.gui [main-thread],
+// and Cocoa would not tolerate anything else.
+
+import NS "core:sys/darwin/Foundation"
+
+import gl "vendor:OpenGL"
+import nvg "vendor:nanovg"
+import nvg_gl "vendor:nanovg/gl"
+
+// Fixed for now; Phase 8 makes the window resizable. These are the dimensions the
+// faceplate in design/panel.html is drawn at, so its coordinates transfer unchanged.
+WIDTH :: 1180
+HEIGHT :: 460
+
+Gui :: struct {
+	view:       ^NS.View,
+	gl_context: ^Gl_Context,
+	format:     ^Pixel_Format,
+	vg:         ^nvg.Context,
+	attached:   bool,
+	visible:    bool,
+	scale:      f32, // host-requested UI scale, separate from Retina backing scale
+	fonts_ok:   bool,
+	bridge:     Bridge,
+	drag:       Drag,
+}
+
+// Builds the view and GL context. The context has no drawable until `attach` gives it a
+// view that lives in a window, so nanovg is deliberately not created here.
+create :: proc(g: ^Gui) -> bool {
+	attributes := [?]u32 {
+		PFA_OPENGL_PROFILE,
+		PROFILE_VERSION_3_2_CORE,
+		PFA_COLOR_SIZE,
+		24,
+		PFA_ALPHA_SIZE,
+		8,
+		PFA_DEPTH_SIZE,
+		24,
+		// nanovg's STENCIL_STROKES path needs a stencil buffer; without one, overlapping
+		// strokes double-darken where they cross.
+		PFA_STENCIL_SIZE,
+		8,
+		PFA_DOUBLE_BUFFER,
+		PFA_ACCELERATED,
+		PFA_NO_RECOVERY,
+		0,
+	}
+
+	g.scale = 1
+	g.visible = false
+	g.attached = false
+	g.drag.control = -1
+
+	g.format = pixel_format_create(raw_data(attributes[:]))
+	if g.format == nil {
+		return false
+	}
+
+	g.gl_context = gl_context_create(g.format)
+	if g.gl_context == nil {
+		destroy(g)
+		return false
+	}
+
+	// A subclassed view, so mouse events reach us at all.
+	class := ensure_view_class()
+	if class == nil {
+		destroy(g)
+		return false
+	}
+	g.view = view_create_of_class(class, NS.Rect{{0, 0}, {NS.Float(WIDTH), NS.Float(HEIGHT)}})
+	if g.view == nil {
+		destroy(g)
+		return false
+	}
+	bind_view(g.view, g)
+	view_set_hidden(g.view, true)
+	return true
+}
+
+destroy :: proc(g: ^Gui) {
+	if g.vg != nil {
+		// Deleting GL objects requires the context that owns them to be current.
+		if g.gl_context != nil {
+			gl_context_make_current(g.gl_context)
+		}
+		nvg_gl.Destroy(g.vg)
+		g.vg = nil
+	}
+
+	if g.gl_context != nil {
+		gl_context_set_view(g.gl_context, nil)
+		gl_context_clear_current()
+	}
+
+	if g.view != nil {
+		view_remove_from_superview(g.view)
+		release(g.view)
+		g.view = nil
+	}
+
+	release(g.gl_context)
+	g.gl_context = nil
+	release(g.format)
+	g.format = nil
+
+	g.attached = false
+	g.visible = false
+}
+
+// `parent` is the host's NSView, straight out of clap_window.cocoa.
+attach :: proc(g: ^Gui, parent: rawptr) -> bool {
+	if g.view == nil || parent == nil {
+		return false
+	}
+
+	NS.View_addSubview((^NS.View)(parent), g.view)
+	// Only meaningful once the view is in a window, which is why it happens here rather
+	// than in create().
+	gl_context_set_view(g.gl_context, g.view)
+	gl_context_update(g.gl_context)
+	g.attached = true
+	return true
+}
+
+set_visible :: proc(g: ^Gui, visible: bool) {
+	g.visible = visible
+	if g.view != nil {
+		view_set_hidden(g.view, !visible)
+	}
+}
+
+set_size :: proc(g: ^Gui, width, height: u32) {
+	if g.view == nil {
+		return
+	}
+	view_set_frame(g.view, NS.Rect{{0, 0}, {NS.Float(width), NS.Float(height)}})
+	if g.gl_context != nil {
+		gl_context_update(g.gl_context)
+	}
+}
+
+// Called from the host's timer. Cheap to call when nothing is up yet.
+render :: proc(g: ^Gui) {
+	if !g.attached || !g.visible || g.gl_context == nil {
+		return
+	}
+
+	gl_context_make_current(g.gl_context)
+
+	if g.vg == nil {
+		if !load_gl() {
+			return
+		}
+		g.vg = nvg_gl.Create({.ANTI_ALIAS, .STENCIL_STROKES})
+		if g.vg == nil {
+			return
+		}
+		g.fonts_ok = load_fonts(g.vg)
+	}
+
+	// nanovg works in points and scales its own geometry; the GL viewport is in pixels.
+	backing := view_backing_scale(g.view)
+	gl.Viewport(0, 0, i32(f32(WIDTH) * backing), i32(f32(HEIGHT) * backing))
+
+	gl.ClearColor(PANEL_CLEAR.r, PANEL_CLEAR.g, PANEL_CLEAR.b, 1)
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
+
+	nvg.BeginFrame(g.vg, WIDTH, HEIGHT, backing)
+	draw_panel(g.vg)
+	if g.fonts_ok {
+		draw_controls(g)
+	}
+	nvg.EndFrame(g.vg)
+
+	gl_context_flush(g.gl_context)
+}

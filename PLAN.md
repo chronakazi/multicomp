@@ -191,15 +191,66 @@ transparency and parallel-mix blending.
 Coefficient updates (envelope `exp()`, biquad trig) are now cached against their inputs, so
 sample-dense automation no longer recomputes them on every event boundary.
 
-**Phase 5 — GUI shell.** Create a child `NSView` under the host's parent view, attach an
-`NSOpenGLContext`, init nanovg, clear to a colour, repaint from `clap.timer-support`
-(host-driven — avoids running our own thread). Implement `clap.gui` fully:
-`is_api_supported`/`create`/`destroy`/`set_parent`/`get_size`/`can_resize`/`set_size`/
-`show`/`hide`. Gate: opens and closes cleanly in a DAW, repeatedly, with no leak.
+**Phase 5 — GUI shell. ✅ DONE.** A child `NSView` under the host's parent, an
+`NSOpenGLContext`, nanovg drawing the faceplate chassis, repainted from
+`clap.timer-support` at 60 Hz. `clap.gui` is implemented in full: `is_api_supported`,
+`get_preferred_api`, `create`, `destroy`, `set_scale`, `get_size`, `can_resize`,
+`get_resize_hints`, `adjust_size`, `set_size`, `set_parent`, `set_transient`,
+`suggest_title`, `show`, `hide`.
 
-**Phase 6 — Widgets and binding.** Knob, toggle, enum selector, drag-and-type value entry,
-bound to the parameter table through the ring buffer with proper gesture begin/end.
-This is where "full GUI" is actually earned.
+Verified by `./build.sh --gui` — **19 checks, all passing** — which renders the panel into
+an offscreen framebuffer and reads the pixels back: walnut cheeks are warm, the faceplate
+is neutral graphite, its gradient runs light to dark, every engraved line is a dark groove
+with a lit lower lip, no pixel is left undrawn, and 5 create/destroy cycles survive. It
+also writes `build/panel.png` so the result can be looked at, not just asserted about.
+
+Notes worth carrying forward:
+
+- **nanovg's Odin port defaults to its GL3 backend** (`#version 150 core`), so the context
+  must be a 3.2 core profile. A legacy profile silently fails to compile the shaders. On
+  an M3 Max macOS reports the context as `4.1 Metal - 89.4` — OpenGL routed through Metal.
+- **`vendor:OpenGL` is a loader with no platform linkage**, so entry points are resolved by
+  name from `OpenGL.framework` at runtime (`src/gui/gl_loader.odin`).
+- **A `foreign import` with no `foreign` block emits no link flag.** Importing AppKit and
+  OpenGL that way looked like linkage but was not; `otool -L` shows only Cocoa, which is
+  what actually provides the NSOpenGL* classes.
+- **The context has no drawable until the view is in a window**, so nanovg is created
+  lazily on the first render after `set_parent` rather than in `create`.
+
+**Phase 6 — Widgets and binding. ✅ DONE.** The panel is live: knobs, buttons, two-position
+toggles, a rotary selector, both LED ladders and the transfer window, all drawn in nanovg
+from the coordinates in `design/panel.html`. Dragging a knob changes the audio; the host
+records it as automation.
+
+- **Mouse events need a subclassed NSView.** A plain one delivers nothing, and Odin cannot
+  declare an Objective-C class at compile time, so `src/gui/input.odin` builds one at
+  runtime with `objc_allocateClassPair` and stores a `^Gui` in an indexed ivar. Overriding
+  `isFlipped` to true puts the origin at the top left, which is the coordinate space the
+  design already uses. `acceptsFirstMouse:` matters too, or the first click into an
+  unfocused plugin window is swallowed activating it.
+- **Edits cross to the audio thread through an SPSC ring** (`plugin/ui_queue.odin`), drained
+  in `process` and `flush`, applied, then echoed on `out_events` wrapped in
+  `PARAM_GESTURE_BEGIN`/`END` so a drag is recorded as one gesture rather than hundreds of
+  loose values. The GUI never writes DSP state.
+- **`request_flush` is not optional.** With the transport stopped a host may not call
+  `process` at all, so without asking for a flush, moving a knob would do nothing.
+- **Values come back through an atomic mirror.** f64 has no atomic intrinsic, so the bits
+  travel as u64 — exact, since it is a copy rather than arithmetic.
+- **The transfer window samples the DSP's own gain computer**, so it cannot show a curve
+  the audio is not applying.
+- **Fonts are loaded from the system** (Arial Narrow Bold, Monaco). nanovg uses
+  stb_truetype, which cannot open a `.ttc` collection without a face offset — so
+  `Helvetica.ttc` is not usable and the `.ttf` files in `Supplemental/` are. A shipping
+  build should embed a licensed face instead of depending on the host machine.
+
+Interaction: drag a knob vertically, shift for fine, double-click to reset. Buttons,
+toggles and the selector advance on press.
+
+Verified: validator **21/16 passed/0 failed/0 warnings**, **27** DSP tests, **33** offline
+audio checks, **4** plugin tests covering the ring buffer's ordering, wrap-around and
+full-queue behaviour, and **21** GUI checks — every control on the faceplate, every one
+clickable, knob caps rendering, the curve drawn in amber, the layout covering all 20
+parameters.
 
 **Phase 7 — Visual feedback.** Input/output/GR meters, the transfer curve with the live
 operating point drawn on it, and a scrolling gain-reduction history. These are what make a

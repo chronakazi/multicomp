@@ -23,6 +23,10 @@ get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 		return &latency_ext
 	case ext.EXT_TAIL:
 		return &tail_ext
+	case ext.EXT_GUI:
+		return &gui_ext
+	case ext.EXT_TIMER_SUPPORT:
+		return &timer_ext
 	}
 	return nil
 }

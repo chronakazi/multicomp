@@ -493,9 +493,13 @@ params_ext := ext.Plugin_Params {
 		out_events: ^clap.Output_Events,
 	) {
 		self := from_plugin(plugin)
+		drain_ui(self, out_events)
+
 		count := in_events.size(in_events)
 		for i in 0 ..< count {
 			handle_event(self, in_events.get(in_events, i))
 		}
+		sync_dsp(self)
+		publish_values(self)
 	},
 }
