@@ -128,9 +128,29 @@ a hard knee, not less — it starts working at `T − W/2` and the two converge 
 `T + W/2`. The slope is gentler; the total reduction is not. A test asserting the opposite
 was wrong and was corrected.
 
-**Phase 3 — Wire it up.** Sample-accurate event splitting in `process`, parameter smoothing,
-lookahead delay with `clap.latency` reporting, `clap.tail`. Gate: validator clean, plus a
-first listen in a DAW.
+**Phase 3 — Wire it up. ✅ DONE.** The compressor is live. Events are applied at their exact
+sample, gain staging is smoothed, lookahead delays the signal path while the detector reads
+ahead, and both `clap.latency` and `clap.tail` report the delay.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**, plus `./build.sh --offline`
+measuring real audio through the built plugin — every gain-reduction figure matches the
+static curve to within 0.03 dB, bypass is bit-transparent, and the impulse delay at 5 ms
+lookahead is exactly the 240 samples reported as latency.
+
+Two design points worth remembering:
+
+- Threshold, ratio and knee are *not* separately smoothed. A change to the curve reaches
+  the output through the envelope follower, which is already smoothing at the user's attack
+  and release times. Only the gain stages that bypass the envelope — input trim, makeup,
+  output trim — get their own smoothers.
+- `Lookahead` is deliberately neither automatable nor modulatable. CLAP requires reported
+  latency to stay constant while active, so latency is latched at `activate`; a change asks
+  the host for a main-thread callback, announces `clap.latency changed`, and requests a
+  restart. Automating that would thrash the host, so it is a setup control.
+
+Still not live, and correctly reported as such: sidechain routing/filtering, variable stereo
+link, mid-side, mix, auto-makeup, auto-release. Detection is fully linked across channels,
+which is exactly what Stereo Link = 100% (the default) means.
 
 **Phase 4 — Routing features.** External sidechain audio port, SC high-pass and listen,
 stereo link, mid/side, mix, auto-makeup, auto-release.

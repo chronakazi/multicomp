@@ -48,6 +48,8 @@ multicomp/
       band.odin        Compressor_Band — the multiband seam
       dsp_test.odin    @(test) procs, run with `odin test src/dsp`
     gui/             (Phase 5) nanovg drawing + Cocoa view embedding
+  tools/
+    offline/         offline CLAP host for measuring real audio (./build.sh --offline)
   clap-odin/         CLAP bindings — treat as a vendored dependency
     *.odin           package clap  — core API + factories
     ext/*.odin       package ext   — stable extensions
@@ -95,6 +97,13 @@ Build, bundle, validate and install all go through `build.sh`:
 ```bash
 ./build.sh --validate
 ```
+
+`--offline` runs [tools/offline](tools/offline) — a small offline CLAP host that loads the
+built plugin, pushes real audio through it and measures the result. It checks things the
+validator does not: that the gain reduction matches the static curve at known settings,
+that bypass is transparent, and that the impulse delay equals the reported latency. Use it
+whenever DSP behaviour changes. It resolves parameters **by name**, so reordering
+`Param_Id` cannot silently invalidate the checks.
 
 `--install` symlinks the bundle into `~/Library/Audio/Plug-Ins/CLAP/` (a symlink, so
 rebuilds are picked up without reinstalling). `--debug` swaps `-o:speed` for `-debug`.
@@ -245,9 +254,12 @@ predates it. Absence there is not evidence the flag is missing; check the raw
 
 ## Working agreements
 
-- `clap-validator validate` must pass with **0 failures and 0 warnings**, and
-  `odin test src/dsp` must be fully green, before any change is called done. Report the
-  actual counts.
+- `clap-validator validate` must pass with **0 failures and 0 warnings**, `odin test src/dsp`
+  must be fully green, and `./build.sh --offline` must report all checks passed, before any
+  change is called done. Report the actual counts.
+- Latency must stay constant while active — CLAP requires it. Anything that changes latency
+  latches at `activate` and asks the host for a restart from `on_main_thread`; it must not
+  be automatable.
 - No allocation, locks, file or console I/O in `process()` or below. `src/dsp/` is
   `proc "contextless"` throughout, which makes this a compile error rather than a dropout.
 - DSP in `src/dsp/` stays free of CLAP types so it can be tested with `odin test`. If a

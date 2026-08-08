@@ -196,14 +196,18 @@ PARAMS := [Param_Id]Param {
 		flags = FLAGS_CHOICE,
 		choices = CHANNEL_MODE_CHOICES,
 	},
+	// Deliberately neither automatable nor modulatable. Changing lookahead changes the
+	// plugin's latency, and CLAP requires reported latency to stay constant while active,
+	// so every change costs a deactivate/reactivate round trip. Automating that would
+	// thrash the host. It is a setup control, not a performance control.
 	.Lookahead = {
 		name = "Lookahead",
 		module = "Detector",
 		kind = .Time_Ms,
 		min = 0,
-		max = 10,
+		max = MAX_LOOKAHEAD_MS,
 		default = 0,
-		flags = FLAGS_CONTINUOUS,
+		flags = 0,
 	},
 
 	// Sidechain
