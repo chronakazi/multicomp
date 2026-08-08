@@ -170,19 +170,44 @@ set_params :: proc(p: Plugin, settings: []Setting) {
 	p.params.flush(p.plugin, &list.vtable, &sink)
 }
 
-// Runs `seconds` of a sine through the plugin and returns the peak output amplitude over
-// the final quarter, by which point the envelope has settled.
-run_sine :: proc(p: Plugin, amplitude, frequency, seconds: f64, block: int = 512) -> f64 {
-	input := buffers_make(block)
+Run :: struct {
+	amplitude:    f64, // main input, left channel
+	frequency:    f64,
+	seconds:      f64,
+	right_scale:  f64, // 1 = same as left; used to test stereo link
+	sc_amplitude: f64, // sidechain port; 0 leaves it silent
+	sc_frequency: f64,
+	block:        int,
+}
+
+DEFAULT_RUN :: Run {
+	amplitude    = 1,
+	frequency    = 1000,
+	seconds      = 1,
+	right_scale  = 1,
+	sc_amplitude = 0,
+	sc_frequency = 1000,
+	block        = 512,
+}
+
+// Runs a signal through the plugin and returns the peak output of each channel over the
+// final quarter, by which point the envelope has settled. Always presents two input ports
+// so the sidechain path can be exercised.
+run_stereo :: proc(p: Plugin, opts: Run) -> (left, right: f64) {
+	block := opts.block
+	main := buffers_make(block)
+	side := buffers_make(block)
 	output := buffers_make(block)
+
+	inputs := [2]clap.Audio_Buffer{main.buffer, side.buffer}
 
 	empty: Event_List
 	event_list_init(&empty)
 
-	total := int(SR * seconds)
-	phase := 0.0
-	step := 2 * math.PI * frequency / SR
-	peak := 0.0
+	total := int(SR * opts.seconds)
+	phase, sc_phase := 0.0, 0.0
+	step := 2 * math.PI * opts.frequency / SR
+	sc_step := 2 * math.PI * opts.sc_frequency / SR
 	measure_from := total * 3 / 4
 	produced := 0
 
@@ -190,20 +215,24 @@ run_sine :: proc(p: Plugin, amplitude, frequency, seconds: f64, block: int = 512
 	for produced < total {
 		frames := min(block, total - produced)
 		for i in 0 ..< frames {
-			value := f32(amplitude * math.sin(phase))
+			value := opts.amplitude * math.sin(phase)
 			phase += step
-			for c in 0 ..< CHANNELS {
-				input.data[c][i] = value
-			}
+			main.data[0][i] = f32(value)
+			main.data[1][i] = f32(value * opts.right_scale)
+
+			sc := opts.sc_amplitude * math.sin(sc_phase)
+			sc_phase += sc_step
+			side.data[0][i] = f32(sc)
+			side.data[1][i] = f32(sc)
 		}
 
 		process := clap.Process {
 			steady_time         = i64(produced),
 			frames_count        = u32(frames),
 			transport           = nil,
-			audio_inputs        = &input.buffer,
+			audio_inputs        = raw_data(inputs[:]),
 			audio_outputs       = &output.buffer,
-			audio_inputs_count  = 1,
+			audio_inputs_count  = 2,
 			audio_outputs_count = 1,
 			in_events           = &empty.vtable,
 			out_events          = &sink,
@@ -212,19 +241,32 @@ run_sine :: proc(p: Plugin, amplitude, frequency, seconds: f64, block: int = 512
 
 		for i in 0 ..< frames {
 			if produced + i >= measure_from {
-				peak = max(peak, f64(abs(output.data[0][i])))
+				left = max(left, f64(abs(output.data[0][i])))
+				right = max(right, f64(abs(output.data[1][i])))
 			}
 		}
 		produced += frames
 	}
 	p.plugin.stop_processing(p.plugin)
-	return peak
+	return
+}
+
+run_sine :: proc(p: Plugin, amplitude, frequency, seconds: f64, block: int = 512) -> f64 {
+	opts := DEFAULT_RUN
+	opts.amplitude = amplitude
+	opts.frequency = frequency
+	opts.seconds = seconds
+	opts.block = block
+	left, _ := run_stereo(p, opts)
+	return left
 }
 
 // Sends a single full-scale impulse and returns the sample index where it reappears.
 measure_impulse_delay :: proc(p: Plugin, block: int = 512) -> int {
 	input := buffers_make(block)
+	side := buffers_make(block)
 	output := buffers_make(block)
+	inputs := [2]clap.Audio_Buffer{input.buffer, side.buffer}
 	empty: Event_List
 	event_list_init(&empty)
 
@@ -249,9 +291,9 @@ measure_impulse_delay :: proc(p: Plugin, block: int = 512) -> int {
 			steady_time         = i64(produced),
 			frames_count        = u32(block),
 			transport           = nil,
-			audio_inputs        = &input.buffer,
+			audio_inputs        = raw_data(inputs[:]),
 			audio_outputs       = &output.buffer,
-			audio_inputs_count  = 1,
+			audio_inputs_count  = 2,
 			audio_outputs_count = 1,
 			in_events           = &empty.vtable,
 			out_events          = &sink,
@@ -395,6 +437,93 @@ main :: proc() {
 	out = db(run_sine(p, from_db(-8.0), 1000, 0.5))
 	check("bypassed signal is untouched", out, -8, 0.05)
 	set_params(p, []Setting{{"Bypass", 0}})
+
+	fmt.println()
+	fmt.println("mix (parallel compression)")
+	// Baseline: fully wet at 4:1 is 9 dB of reduction on a -8 dBFS tone.
+	set_params(
+		p,
+		[]Setting{{"Input Trim", 0}, {"Bypass", 0}, {"Threshold", -20}, {"Ratio", 4}, {"Mix", 100}},
+	)
+	wet := db(run_sine(p, from_db(-8.0), 1000, 1.0))
+
+	set_params(p, []Setting{{"Mix", 0}})
+	out = db(run_sine(p, from_db(-8.0), 1000, 1.0))
+	check("mix 0% is the dry signal", out, -8, 0.05)
+
+	set_params(p, []Setting{{"Mix", 50}})
+	out = db(run_sine(p, from_db(-8.0), 1000, 1.0))
+	// Blending happens in the linear domain, so the midpoint is not -12.5 dB.
+	expected_mix := db((from_db(-8.0) + from_db(wet)) * 0.5)
+	check("mix 50% blends dry and wet", out, expected_mix, 0.15)
+	set_params(p, []Setting{{"Mix", 100}})
+
+	fmt.println()
+	fmt.println("auto makeup")
+	set_params(p, []Setting{{"Auto Makeup", 0}})
+	without := db(run_sine(p, from_db(-8.0), 1000, 1.0))
+	set_params(p, []Setting{{"Auto Makeup", 1}})
+	with := db(run_sine(p, from_db(-8.0), 1000, 1.0))
+	// Half the reduction the curve would apply at 0 dBFS: threshold -20, 4:1 -> 15 dB, so 7.5.
+	check("auto makeup adds half the curve's 0 dBFS reduction", with - without, 7.5, 0.3)
+	set_params(p, []Setting{{"Auto Makeup", 0}})
+
+	fmt.println()
+	fmt.println("stereo link")
+	// Left at -8 dBFS, right 20 dB quieter and below threshold.
+	asymmetric := DEFAULT_RUN
+	asymmetric.amplitude = from_db(-8.0)
+	asymmetric.right_scale = from_db(-20.0)
+
+	set_params(p, []Setting{{"Stereo Link", 100}})
+	left, right := run_stereo(p, asymmetric)
+	check("linked: right follows left", db(right) - db(left), -20, 0.3)
+
+	set_params(p, []Setting{{"Stereo Link", 0}})
+	left, right = run_stereo(p, asymmetric)
+	// Unlinked, the quiet channel is below threshold and keeps its full level, so the
+	// channel difference shrinks - the image is pulled toward the quiet side.
+	testing_gap := db(right) - db(left)
+	check("unlinked: quiet channel is not reduced", db(right), -28, 0.3)
+	check("unlinked: image shifts vs linked", testing_gap, -11, 0.5)
+	set_params(p, []Setting{{"Stereo Link", 100}})
+
+	fmt.println()
+	fmt.println("sidechain")
+	// A 50 Hz tone with the detector high-passed at 500 Hz should barely compress.
+	set_params(p, []Setting{{"SC High-Pass", 20}})
+	unfiltered := db(run_sine(p, from_db(-8.0), 50, 1.0))
+	set_params(p, []Setting{{"SC High-Pass", 500}})
+	filtered := db(run_sine(p, from_db(-8.0), 50, 1.0))
+	check("high-pass keeps low end out of the detector", filtered - unfiltered, 8.9, 0.6)
+	set_params(p, []Setting{{"SC High-Pass", 20}})
+
+	// External sidechain: a loud sidechain compresses a quiet main signal.
+	ducking := DEFAULT_RUN
+	ducking.amplitude = from_db(-30.0) // well below threshold on its own
+	ducking.sc_amplitude = from_db(-8.0) // 12 dB over threshold
+
+	set_params(p, []Setting{{"SC Source", 0}})
+	internal, _ := run_stereo(p, ducking)
+	check("internal source ignores the sidechain port", db(internal), -30, 0.1)
+
+	set_params(p, []Setting{{"SC Source", 1}})
+	external, _ := run_stereo(p, ducking)
+	check("external source ducks from the sidechain", db(external), -39, 0.6)
+
+	// SC Listen must monitor the detector signal, not the main input.
+	set_params(p, []Setting{{"SC Listen", 1}})
+	listened, _ := run_stereo(p, ducking)
+	check("SC listen outputs the sidechain", db(listened), -8, 0.2)
+	set_params(p, []Setting{{"SC Listen", 0}, {"SC Source", 0}})
+
+	fmt.println()
+	fmt.println("mid-side")
+	// With no compression, mid-side encode/decode must be lossless.
+	set_params(p, []Setting{{"Ratio", 1}, {"Channel Mode", 1}})
+	out = db(run_sine(p, from_db(-8.0), 1000, 0.5))
+	check("mid-side at 1:1 is transparent", out, -8, 0.01)
+	set_params(p, []Setting{{"Channel Mode", 0}, {"Ratio", 4}})
 
 	fmt.println()
 	fmt.println("lookahead and latency")

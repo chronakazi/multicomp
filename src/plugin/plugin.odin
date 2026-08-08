@@ -7,12 +7,11 @@ import clap "proj:clap-odin"
 import ext "proj:clap-odin/ext"
 import "proj:src/dsp"
 
-// Phase 3: the compressor is live. Events are applied sample-accurately, gain staging is
-// smoothed, and lookahead is delayed with the latency reported to the host.
+// The compressor. Events are applied sample-accurately, gain staging is smoothed, and the
+// signal path runs: sidechain selection -> mid/side encode -> high-pass -> detection ->
+// static curve -> envelope -> gain, blended back against the latency-aligned dry signal.
 //
-// Not yet live (Phase 4): sidechain routing and filtering, variable stereo link, mid-side,
-// mix, auto-makeup and auto-release. Detection is fully linked across channels, which is
-// what Stereo Link = 100% (the default) means.
+// Every parameter in the table is live as of Phase 4.
 
 MAX_BANDS :: 4
 MAX_CHANNELS :: 2
@@ -47,12 +46,30 @@ Multicomp :: struct {
 	band_count:        int,
 	gains:             [Gain_Stage]dsp.Smoother,
 
+	// Sidechain conditioning. Lives here rather than in the band because it is routing:
+	// SC Listen needs to monitor the filtered signal before the compressor sees it.
+	sidechain_filter:  [MAX_CHANNELS]dsp.Biquad,
+
 	// Lookahead. `latency_samples` is fixed for the lifetime of one activation, because
 	// CLAP requires reported latency to stay constant while active.
 	lookahead:         [MAX_CHANNELS]dsp.Delay_Line,
 	lookahead_storage: []f64,
 	latency_samples:   u32,
 	latency_dirty:     bool,
+
+	// Derived values recomputed only when their inputs change, so a heavily automated
+	// block does not pay for exp() and trig on every event boundary.
+	auto_makeup_db:    f64,
+	cached:            Derived_Config,
+}
+
+// The parameter values the expensive coefficient updates depend on.
+Derived_Config :: struct {
+	attack:            f64,
+	release:           f64,
+	auto_release:      f64,
+	sidechain_cutoff:  f64,
+	valid:             bool,
 }
 
 // Recover our own struct from the pointer the host handed back.
@@ -116,8 +133,9 @@ activate :: proc "c" (plugin: ^clap.Plugin, sample_rate: f64, min_frames, max_fr
 
 	self.band_count = 1
 	for index in 0 ..< self.band_count {
-		dsp.band_init(&self.bands[index], sample_rate)
+		dsp.band_init(&self.bands[index], sample_rate, MAX_CHANNELS)
 	}
+	self.cached = {}
 
 	for stage in Gain_Stage {
 		dsp.smoother_init(
@@ -155,6 +173,7 @@ reset :: proc "c" (plugin: ^clap.Plugin) {
 	for channel in 0 ..< MAX_CHANNELS {
 		dsp.delay_line_clear(&self.lookahead[channel])
 		dsp.delay_line_set_delay(&self.lookahead[channel], int(self.latency_samples))
+		dsp.biquad_reset(&self.sidechain_filter[channel])
 	}
 	for stage in Gain_Stage {
 		dsp.smoother_snap(&self.gains[stage], gain_target(self, stage))
@@ -188,18 +207,60 @@ sync_dsp :: proc "contextless" (self: ^Multicomp) {
 		dsp.gain_computer_set(&band.computer, threshold, ratio, knee)
 	}
 
-	dsp.envelope_set_times(
-		&band.envelope,
-		self.values[.Attack],
-		self.values[.Release],
-		self.sample_rate,
-	)
+	// Auto makeup restores half of what the curve would take off a full-scale signal.
+	// Half rather than all: full compensation reliably overshoots, because real material
+	// does not sit at 0 dBFS. At 1:1 this is 0, so the default stays transparent.
+	self.auto_makeup_db = 0.5 * dsp.gain_computer_reduction_db(band.computer, 0)
 
-	band.detector.mode = dsp.Detector_Mode(int(self.values[.Detector]))
+	band_set_detector(self, dsp.Detector_Mode(int(self.values[.Detector])))
 	band.topology = dsp.Topology_Mode(int(self.values[.Topology]))
+	band.stereo_link = self.values[.Stereo_Link] * 0.01
+
+	// Coefficient updates involve exp() and trig, so only redo them when their inputs
+	// actually moved. Automation can otherwise land an event on every sample.
+	attack := self.values[.Attack]
+	release := self.values[.Release]
+	auto_release := self.values[.Auto_Release]
+	cutoff := self.values[.Sidechain_Highpass]
+
+	if !self.cached.valid ||
+	   self.cached.attack != attack ||
+	   self.cached.release != release ||
+	   self.cached.auto_release != auto_release {
+		dsp.band_set_times(band, attack, release, self.sample_rate, auto_release >= 0.5)
+		self.cached.attack = attack
+		self.cached.release = release
+		self.cached.auto_release = auto_release
+	}
+
+	if !self.cached.valid || self.cached.sidechain_cutoff != cutoff {
+		for channel in 0 ..< MAX_CHANNELS {
+			// The bottom of the range means "off", so the default detector path is
+			// genuinely unfiltered rather than merely nearly so.
+			if cutoff <= SIDECHAIN_HIGHPASS_MIN {
+				dsp.biquad_set_bypass(&self.sidechain_filter[channel])
+			} else {
+				dsp.biquad_set_highpass(
+					&self.sidechain_filter[channel],
+					cutoff,
+					dsp.BUTTERWORTH_Q,
+					self.sample_rate,
+				)
+			}
+		}
+		self.cached.sidechain_cutoff = cutoff
+	}
+
+	self.cached.valid = true
 
 	for stage in Gain_Stage {
 		dsp.smoother_set_target(&self.gains[stage], gain_target(self, stage))
+	}
+}
+
+band_set_detector :: proc "contextless" (self: ^Multicomp, mode: dsp.Detector_Mode) {
+	for index in 0 ..< self.band_count {
+		dsp.band_set_detector(&self.bands[index], mode)
 	}
 }
 
@@ -247,33 +308,98 @@ process_block :: proc "contextless" (self: ^Multicomp, process: ^clap.Process, s
 
 	channels := min(int(input.channel_count), int(output.channel_count), MAX_CHANNELS)
 	band := &self.bands[0]
+
 	bypassed := self.values[.Bypass] >= 0.5
+	mid_side := int(self.values[.Channel_Mode]) == int(Channel_Mode_Value.Mid_Side)
+	listening := self.values[.Sidechain_Listen] >= 0.5
+	mix := clamp(self.values[.Mix] * 0.01, 0, 1)
+
+	auto_makeup := self.values[.Auto_Makeup] >= 0.5 ? self.auto_makeup_db : 0
+
+	// Fall back to the main input when the host has not connected a sidechain, so
+	// selecting External never silently mutes the detector.
+	detector_source := input
+	if int(self.values[.Sidechain_Source]) == int(Sidechain_Source_Value.External) &&
+	   process.audio_inputs_count > SIDECHAIN_PORT {
+		candidate := &process.audio_inputs[SIDECHAIN_PORT]
+		if candidate.data32 != nil && candidate.channel_count > 0 {
+			detector_source = candidate
+		}
+	}
+	source_channels := int(detector_source.channel_count)
 
 	for i in start ..< end {
 		// Gain stages advance every sample so a knob move never steps the output.
 		input_trim := dsp.db_to_linear(dsp.smoother_tick(&self.gains[.Input_Trim]))
-		makeup_db := dsp.smoother_tick(&self.gains[.Makeup])
+		makeup_db := dsp.smoother_tick(&self.gains[.Makeup]) + auto_makeup
 		output_trim := dsp.db_to_linear(dsp.smoother_tick(&self.gains[.Output_Trim]))
 
-		// One detector fed by the loudest channel: compressing channels independently
-		// would pull the stereo image around on every transient.
-		detector_level := 0.0
+		// --- detector path -------------------------------------------------------
+		detector: [MAX_CHANNELS]f64
 		for channel in 0 ..< channels {
-			sample := f64(input.data32[channel][i]) * input_trim
-			detector_level = max(detector_level, abs(sample))
+			source := min(channel, source_channels - 1)
+			detector[channel] = f64(detector_source.data32[source][i]) * input_trim
+		}
+		if mid_side && channels >= 2 {
+			detector[0], detector[1] = dsp.encode_mid_side(detector[0], detector[1])
+		}
+		for channel in 0 ..< channels {
+			detector[channel] = dsp.biquad_tick(
+				&self.sidechain_filter[channel],
+				detector[channel],
+			)
 		}
 
-		gain_db := dsp.band_tick(band, detector_level)
-		gain := dsp.db_to_linear(gain_db + makeup_db) * input_trim * output_trim
+		gains_db: [MAX_CHANNELS]f64
+		dsp.band_tick(band, detector[:channels], gains_db[:channels])
 
+		// --- signal path ---------------------------------------------------------
+		// The delay line holds the untouched input, so bypass can pass it straight
+		// through while still costing the same latency the host was told about.
+		dry: [MAX_CHANNELS]f64
 		for channel in 0 ..< channels {
-			// The delay line holds the untouched input, so bypass can pass it straight
-			// through while still costing the same latency the host was told about.
-			delayed := dsp.delay_line_tick(
+			dry[channel] = dsp.delay_line_tick(
 				&self.lookahead[channel],
 				f64(input.data32[channel][i]),
 			)
-			output.data32[channel][i] = f32(bypassed ? delayed : delayed * gain)
+		}
+
+		if bypassed {
+			for channel in 0 ..< channels {
+				output.data32[channel][i] = f32(dry[channel])
+			}
+			continue
+		}
+
+		// Auditioning the detector: hear exactly what the compressor is reacting to.
+		if listening {
+			for channel in 0 ..< channels {
+				output.data32[channel][i] = f32(detector[channel] * output_trim)
+			}
+			continue
+		}
+
+		for channel in 0 ..< channels {
+			dry[channel] *= input_trim
+		}
+
+		wet := dry
+		if mid_side && channels >= 2 {
+			wet[0], wet[1] = dsp.encode_mid_side(wet[0], wet[1])
+		}
+		for channel in 0 ..< channels {
+			wet[channel] *= dsp.db_to_linear(gains_db[channel] + makeup_db)
+		}
+		if mid_side && channels >= 2 {
+			wet[0], wet[1] = dsp.decode_mid_side(wet[0], wet[1])
+		}
+
+		// Parallel compression. Both paths come off the same delay line, so the dry
+		// signal is already latency-aligned with the wet one - blending them cannot
+		// produce the comb filtering that an uncompensated dry path would.
+		for channel in 0 ..< channels {
+			blended := dry[channel] + (wet[channel] - dry[channel]) * mix
+			output.data32[channel][i] = f32(blended * output_trim)
 		}
 	}
 }

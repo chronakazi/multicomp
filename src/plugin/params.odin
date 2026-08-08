@@ -64,6 +64,10 @@ Param :: struct {
 // expects. The top of the range means infinite ratio, i.e. limiting.
 RATIO_MAX :: 20.0
 
+// The bottom of the sidechain high-pass range means "off", so the default detector path is
+// genuinely unfiltered rather than merely nearly so.
+SIDECHAIN_HIGHPASS_MIN :: 20.0
+
 FLAG_AUTOMATABLE :: u32(ext.Param_Info_Flag.AUTOMATABLE)
 FLAG_MODULATABLE :: u32(ext.Param_Info_Flag.MODULATABLE)
 FLAG_STEPPED :: u32(ext.Param_Info_Flag.STEPPED)
@@ -82,6 +86,7 @@ FLAGS_CHOICE :: FLAG_AUTOMATABLE | FLAG_STEPPED | FLAG_ENUM
 // controls that silently do nothing, which reads as a bug.
 //
 // Drop NOT_IMPLEMENTED from a parameter in the same change that makes it work.
+// Nothing carries it as of Phase 4 - every parameter in the table does something.
 NOT_IMPLEMENTED :: FLAG_HIDDEN
 
 ON_OFF := []string{"Off", "On"}
@@ -165,7 +170,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 1,
 		default = 0,
-		flags = FLAGS_SWITCH | NOT_IMPLEMENTED,
+		flags = FLAGS_SWITCH,
 		choices = ON_OFF,
 	},
 
@@ -197,7 +202,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 100,
 		default = 100,
-		flags = FLAGS_CONTINUOUS | NOT_IMPLEMENTED,
+		flags = FLAGS_CONTINUOUS,
 	},
 	.Channel_Mode = {
 		name = "Channel Mode",
@@ -206,7 +211,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = f64(len(Channel_Mode_Value) - 1),
 		default = f64(Channel_Mode_Value.Stereo),
-		flags = FLAGS_CHOICE | NOT_IMPLEMENTED,
+		flags = FLAGS_CHOICE,
 		choices = CHANNEL_MODE_CHOICES,
 	},
 	// Deliberately neither automatable nor modulatable. Changing lookahead changes the
@@ -231,17 +236,17 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = f64(len(Sidechain_Source_Value) - 1),
 		default = f64(Sidechain_Source_Value.Internal),
-		flags = FLAGS_CHOICE | NOT_IMPLEMENTED,
+		flags = FLAGS_CHOICE,
 		choices = SIDECHAIN_SOURCE_CHOICES,
 	},
 	.Sidechain_Highpass = {
 		name = "SC High-Pass",
 		module = "Sidechain",
 		kind = .Frequency_Hz,
-		min = 20,
+		min = SIDECHAIN_HIGHPASS_MIN,
 		max = 500,
-		default = 20,
-		flags = FLAGS_CONTINUOUS | NOT_IMPLEMENTED,
+		default = SIDECHAIN_HIGHPASS_MIN,
+		flags = FLAGS_CONTINUOUS,
 	},
 	.Sidechain_Listen = {
 		name = "SC Listen",
@@ -250,7 +255,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 1,
 		default = 0,
-		flags = FLAGS_SWITCH | NOT_IMPLEMENTED,
+		flags = FLAGS_SWITCH,
 		choices = ON_OFF,
 	},
 
@@ -271,7 +276,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 1,
 		default = 0,
-		flags = FLAGS_SWITCH | NOT_IMPLEMENTED,
+		flags = FLAGS_SWITCH,
 		choices = ON_OFF,
 	},
 	.Mix = {
@@ -281,7 +286,7 @@ PARAMS := [Param_Id]Param {
 		min = 0,
 		max = 100,
 		default = 100,
-		flags = FLAGS_CONTINUOUS | NOT_IMPLEMENTED,
+		flags = FLAGS_CONTINUOUS,
 	},
 	.Output_Trim = {
 		name = "Output Trim",

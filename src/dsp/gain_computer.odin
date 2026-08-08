@@ -38,6 +38,14 @@ gain_computer_set_limiting :: proc "contextless" (
 
 // Maps an input level in dB to an output level in dB.
 gain_computer_output_db :: proc "contextless" (computer: Gain_Computer, input_db: f64) -> f64 {
+	// A ratio of 1:1 is a no-op by definition, so say so exactly. Falling through would
+	// compute `threshold + (input - threshold)`, which only equals `input` to within
+	// floating point rounding - enough to leave a stray fraction of a dB of "reduction"
+	// on a plugin that is supposed to be bit-transparent at its default settings.
+	if computer.inv_ratio >= 1 {
+		return input_db
+	}
+
 	over := input_db - computer.threshold_db
 	knee := computer.knee_db
 

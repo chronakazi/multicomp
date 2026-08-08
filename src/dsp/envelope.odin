@@ -66,11 +66,21 @@ level_detector_tick :: proc "contextless" (detector: ^Level_Detector, sample: f6
 //
 // The signal being smoothed is the *gain reduction* in dB, always >= 0.
 Envelope_Follower :: struct {
-	attack_coeff:  f64,
-	release_coeff: f64,
-	stage1:        f64,
-	output:        f64,
+	attack_coeff:       f64,
+	release_coeff:      f64,
+	release_fast_coeff: f64,
+	auto_release:       bool,
+	stage1:             f64,
+	output:             f64,
 }
+
+// Program-dependent release. With `auto_release` on, the release coefficient slides
+// between a fast branch and the user's setting according to how deep the current gain
+// reduction is: a brief transient recovers quickly, a sustained passage recovers at the
+// full release time. This is the behaviour engineers describe as the compressor
+// "breathing with the material" rather than pumping at one fixed rate.
+AUTO_RELEASE_FAST_SCALE :: 0.25
+AUTO_RELEASE_FULL_DB :: 12.0
 
 envelope_set_times :: proc "contextless" (
 	envelope: ^Envelope_Follower,
@@ -78,6 +88,10 @@ envelope_set_times :: proc "contextless" (
 ) {
 	envelope.attack_coeff = one_pole_coeff(attack_ms / 1000, sample_rate)
 	envelope.release_coeff = one_pole_coeff(release_ms / 1000, sample_rate)
+	envelope.release_fast_coeff = one_pole_coeff(
+		release_ms / 1000 * AUTO_RELEASE_FAST_SCALE,
+		sample_rate,
+	)
 }
 
 envelope_reset :: proc "contextless" (envelope: ^Envelope_Follower) {
@@ -86,8 +100,17 @@ envelope_reset :: proc "contextless" (envelope: ^Envelope_Follower) {
 }
 
 envelope_tick :: proc "contextless" (envelope: ^Envelope_Follower, reduction_db: f64) -> f64 {
+	release := envelope.release_coeff
+	if envelope.auto_release {
+		// Blending the coefficients rather than the time constants is not strictly the
+		// same curve, but it is monotonic, cheap, and avoids an exp() per sample.
+		depth := clamp(envelope.output / AUTO_RELEASE_FULL_DB, 0, 1)
+		release = envelope.release_fast_coeff +
+			(envelope.release_coeff - envelope.release_fast_coeff) * depth
+	}
+
 	// Release-only stage: rises instantly, falls with the release coefficient.
-	released := envelope.release_coeff * envelope.stage1 + (1 - envelope.release_coeff) * reduction_db
+	released := release * envelope.stage1 + (1 - release) * reduction_db
 	envelope.stage1 = max(reduction_db, released)
 
 	// Attack stage: a plain one-pole smoothing the result.

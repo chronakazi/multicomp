@@ -28,12 +28,18 @@ get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 }
 
 //
-// clap.audio-ports — one stereo in, one stereo out. Phase 4 adds the sidechain input.
+// clap.audio-ports — two stereo inputs (main + sidechain), one stereo output.
 //
+// The sidechain is an ordinary extra input port: CLAP has no dedicated sidechain flag, so
+// it is identified by not carrying IS_MAIN. Hosts leave it disconnected unless the user
+// routes something to it, and `process` falls back to the main input in that case.
+//
+
+SIDECHAIN_PORT :: 1
 
 audio_ports_ext := ext.Plugin_Audio_Ports {
 	count = proc "c" (plugin: ^clap.Plugin, is_input: bool) -> u32 {
-		return 1
+		return is_input ? 2 : 1
 	},
 
 	get = proc "c" (
@@ -42,17 +48,25 @@ audio_ports_ext := ext.Plugin_Audio_Ports {
 		is_input: bool,
 		info: ^ext.Audio_Port_Info,
 	) -> bool {
-		if index != 0 {
-			return false
-		}
 		context = runtime.default_context()
 
-		info.id = 0
-		copy(info.name[:], "Main")
-		info.flags = u32(ext.Audio_Port_Flag.IS_MAIN)
 		info.channel_count = 2
 		info.port_type = ext.AUDIO_PORT_STEREO
 		info.in_place_pair = clap.INVALID_ID
+
+		if is_input && index == SIDECHAIN_PORT {
+			info.id = SIDECHAIN_PORT
+			copy(info.name[:], "Sidechain")
+			info.flags = 0
+			return true
+		}
+
+		if index != 0 {
+			return false
+		}
+		info.id = 0
+		copy(info.name[:], "Main")
+		info.flags = u32(ext.Audio_Port_Flag.IS_MAIN)
 		return true
 	},
 }

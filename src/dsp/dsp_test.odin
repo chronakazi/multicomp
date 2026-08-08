@@ -408,13 +408,21 @@ smoother_snap_skips_the_ramp :: proc(t: ^testing.T) {
 // Band integration
 //
 
+// Convenience for the single-channel cases below.
+band_tick_mono :: proc(band: ^Compressor_Band, sample: f64) -> f64 {
+	inputs := [1]f64{sample}
+	gains: [1]f64
+	band_tick(band, inputs[:], gains[:])
+	return gains[0]
+}
+
 @(test)
 band_compresses_steady_tone :: proc(t: ^testing.T) {
 	band: Compressor_Band
-	band_init(&band, SR)
+	band_init(&band, SR, 1)
 	gain_computer_set(&band.computer, -20, 4, 0)
-	envelope_set_times(&band.envelope, 1, 10, SR)
-	level_detector_init(&band.detector, .Peak, SR)
+	band_set_times(&band, 1, 10, SR)
+	band_set_detector(&band, .Peak)
 	band_reset(&band)
 
 	// A steady -8 dBFS tone is 12 dB over threshold; at 4:1 that is 9 dB of reduction.
@@ -422,7 +430,7 @@ band_compresses_steady_tone :: proc(t: ^testing.T) {
 	gain_db := 0.0
 	for i in 0 ..< int(SR) {
 		phase := 2 * math.PI * 1000 * f64(i) / SR
-		gain_db = band_tick(&band, amplitude * math.sin(phase))
+		gain_db = band_tick_mono(&band, amplitude * math.sin(phase))
 	}
 
 	// Peak detection on a sine ripples with the waveform, so this is a loose bound.
@@ -437,15 +445,36 @@ band_compresses_steady_tone :: proc(t: ^testing.T) {
 @(test)
 band_leaves_quiet_signal_alone :: proc(t: ^testing.T) {
 	band: Compressor_Band
-	band_init(&band, SR)
+	band_init(&band, SR, 1)
 	gain_computer_set(&band.computer, -20, 4, 0)
 	band_reset(&band)
 
 	amplitude := db_to_linear(-40)
 	for i in 0 ..< 4800 {
 		phase := 2 * math.PI * 1000 * f64(i) / SR
-		gain_db := band_tick(&band, amplitude * math.sin(phase))
+		gain_db := band_tick_mono(&band, amplitude * math.sin(phase))
 		expect_near(t, gain_db, 0, 1e-9, "no reduction below threshold")
+	}
+}
+
+@(test)
+band_unity_ratio_is_exactly_transparent :: proc(t: ^testing.T) {
+	// The plugin relies on this: ratio 1:1 must produce a gain of exactly 0 dB at every
+	// level, whatever the threshold and knee are, so a freshly inserted plugin is
+	// bit-transparent.
+	band: Compressor_Band
+	band_init(&band, SR, 2)
+	gain_computer_set(&band.computer, -40, 1, 12)
+	band_reset(&band)
+
+	inputs, gains: [2]f64
+	for i in 0 ..< 4800 {
+		phase := 2 * math.PI * 1000 * f64(i) / SR
+		inputs[0] = math.sin(phase)
+		inputs[1] = 0.5 * math.sin(phase)
+		band_tick(&band, inputs[:], gains[:])
+		expect_near(t, gains[0], 0, 0, "left gain is exactly unity")
+		expect_near(t, gains[1], 0, 0, "right gain is exactly unity")
 	}
 }
 
@@ -455,9 +484,9 @@ band_feedback_reduces_less_than_feedforward :: proc(t: ^testing.T) {
 	// feed-forward case for the same input. That is the defining behaviour of the topology.
 	run :: proc(topology: Topology_Mode) -> f64 {
 		band: Compressor_Band
-		band_init(&band, SR)
+		band_init(&band, SR, 1)
 		gain_computer_set(&band.computer, -20, 4, 0)
-		envelope_set_times(&band.envelope, 1, 10, SR)
+		band_set_times(&band, 1, 10, SR)
 		band.topology = topology
 		band_reset(&band)
 
@@ -465,7 +494,7 @@ band_feedback_reduces_less_than_feedforward :: proc(t: ^testing.T) {
 		gain_db := 0.0
 		for i in 0 ..< int(SR) {
 			phase := 2 * math.PI * 1000 * f64(i) / SR
-			gain_db = band_tick(&band, amplitude * math.sin(phase))
+			gain_db = band_tick_mono(&band, amplitude * math.sin(phase))
 		}
 		return gain_db
 	}
@@ -480,4 +509,146 @@ band_feedback_reduces_less_than_feedforward :: proc(t: ^testing.T) {
 		feedback,
 		feed_forward,
 	)
+}
+
+//
+// Stereo link
+//
+
+// Drives one loud channel and one quiet one, and reports the settled gain of each.
+//
+// The quiet level matters: the blended level has to land above the threshold for the link
+// amount to show up at all. Blending -40 dBFS halfway toward -8 gives -24, still under a
+// -20 threshold, so a half-linked channel would correctly show no reduction whatsoever.
+run_asymmetric :: proc(link: f64, quiet_db := -40.0) -> (loud, quiet: f64) {
+	band: Compressor_Band
+	band_init(&band, SR, 2)
+	gain_computer_set(&band.computer, -20, 4, 0)
+	band_set_times(&band, 1, 10, SR)
+	band.stereo_link = link
+	band_reset(&band)
+
+	inputs, gains: [2]f64
+	for i in 0 ..< int(SR) {
+		phase := 2 * math.PI * 1000 * f64(i) / SR
+		inputs[0] = db_to_linear(-8) * math.sin(phase)
+		inputs[1] = db_to_linear(quiet_db) * math.sin(phase)
+		band_tick(&band, inputs[:], gains[:])
+	}
+	return gains[0], gains[1]
+}
+
+@(test)
+stereo_link_full_moves_both_channels_together :: proc(t: ^testing.T) {
+	loud, quiet := run_asymmetric(1)
+	expect_near(t, quiet, loud, 1e-9, "fully linked channels must share one gain")
+	testing.expectf(t, loud < -6, "loud channel should still be compressed, got %.3f", loud)
+}
+
+@(test)
+stereo_link_zero_leaves_channels_independent :: proc(t: ^testing.T) {
+	loud, quiet := run_asymmetric(0)
+	testing.expectf(t, loud < -6, "loud channel should be compressed, got %.3f dB", loud)
+	expect_near(t, quiet, 0, 1e-9, "quiet channel is below threshold and must be untouched")
+}
+
+@(test)
+stereo_link_half_is_between :: proc(t: ^testing.T) {
+	// -26 dBFS blended halfway toward -8 lands at -17, comfortably over the threshold.
+	QUIET :: -26.0
+	_, quiet_linked := run_asymmetric(1, QUIET)
+	_, quiet_free := run_asymmetric(0, QUIET)
+	_, quiet_half := run_asymmetric(0.5, QUIET)
+
+	testing.expectf(
+		t,
+		quiet_half < quiet_free - 1e-6 && quiet_half > quiet_linked + 1e-6,
+		"50%% link (%.3f dB) should sit between free (%.3f) and linked (%.3f)",
+		quiet_half,
+		quiet_free,
+		quiet_linked,
+	)
+}
+
+//
+// Auto release
+//
+
+@(test)
+auto_release_recovers_faster_after_a_brief_peak :: proc(t: ^testing.T) {
+	// Same nominal release time; the auto version should return to unity sooner after a
+	// shallow, short-lived reduction.
+	settle :: proc(auto: bool) -> int {
+		envelope: Envelope_Follower
+		envelope_set_times(&envelope, 0.1, 200, SR)
+		envelope.auto_release = auto
+		envelope_reset(&envelope)
+
+		// A brief 3 dB dip.
+		for _ in 0 ..< int(SR / 100) {
+			envelope_tick(&envelope, 3)
+		}
+		for i in 0 ..< int(SR) {
+			if envelope_tick(&envelope, 0) < 0.1 {
+				return i
+			}
+		}
+		return int(SR)
+	}
+
+	fast := settle(true)
+	slow := settle(false)
+	testing.expectf(
+		t,
+		fast < slow,
+		"auto release should recover sooner: auto %d samples vs fixed %d",
+		fast,
+		slow,
+	)
+}
+
+@(test)
+auto_release_off_is_unchanged :: proc(t: ^testing.T) {
+	// The flag must be inert when off, so existing behaviour is untouched.
+	a, b: Envelope_Follower
+	envelope_set_times(&a, 5, 120, SR)
+	envelope_set_times(&b, 5, 120, SR)
+	a.auto_release = false
+	b.auto_release = false
+
+	for i in 0 ..< 5000 {
+		reduction := i % 200 < 100 ? 8.0 : 0.0
+		expect_near(t, envelope_tick(&a, reduction), envelope_tick(&b, reduction), 0, "identical")
+	}
+}
+
+//
+// Mid-side
+//
+
+@(test)
+mid_side_round_trips_exactly :: proc(t: ^testing.T) {
+	for i in 0 ..< 1000 {
+		left := math.sin(f64(i) * 0.1)
+		right := math.cos(f64(i) * 0.07) * 0.3
+
+		mid, side := encode_mid_side(left, right)
+		back_left, back_right := decode_mid_side(mid, side)
+
+		expect_near(t, back_left, left, 1e-15, "left survives the round trip")
+		expect_near(t, back_right, right, 1e-15, "right survives the round trip")
+	}
+}
+
+@(test)
+mid_side_separates_centre_from_width :: proc(t: ^testing.T) {
+	// A mono signal is all mid, no side.
+	mid, side := encode_mid_side(0.7, 0.7)
+	expect_near(t, mid, 0.7, 1e-15, "mono is all mid")
+	expect_near(t, side, 0, 1e-15, "mono has no side")
+
+	// A perfectly out-of-phase signal is all side, no mid.
+	mid, side = encode_mid_side(0.7, -0.7)
+	expect_near(t, mid, 0, 1e-15, "out of phase has no mid")
+	expect_near(t, side, 0.7, 1e-15, "out of phase is all side")
 }

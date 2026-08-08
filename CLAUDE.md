@@ -18,9 +18,10 @@ are a slice that can grow to multiband later (hence the project name) without a 
 
 `odinfmt`/`ols` are **not** installed — format by hand to the conventions below.
 
-Repo state: `multicomp/` itself is **not** a git repository. `clap-odin/` is, and it
-currently has uncommitted modifications to most binding files. The verified-good
-binding state is the working tree, not `HEAD`.
+Version control: **jj**, colocated with a git repo for GitHub interop. Use `jj` commands
+(`jj status`, `jj log`, `jj commit`), not `git add`/`git commit` — jj snapshots the working
+copy automatically, so there is nothing to stage. `clap-odin/` is a separate nested git
+repo; the verified-good binding state there is its working tree, not its `HEAD`.
 
 ## Layout
 
@@ -41,11 +42,12 @@ multicomp/
     dsp/             package dsp — pure DSP, no CLAP types, unit-testable
       db.odin          dB conversions, one_pole_coeff
       gain_computer.odin  static curve with quadratic soft knee
-      envelope.odin    Level_Detector (peak/RMS/hybrid) + Envelope_Follower
+      envelope.odin    Level_Detector (peak/RMS/hybrid) + Envelope_Follower, auto-release
       biquad.odin      RBJ biquad, transposed direct form II
       delay.odin       lookahead delay, caller-supplied storage
       smoother.odin    one-pole parameter smoothing
-      band.odin        Compressor_Band — the multiband seam
+      stereo.odin      lossless mid-side encode/decode
+      band.odin        Compressor_Band — per-channel state, stereo link, multiband seam
       dsp_test.odin    @(test) procs, run with `odin test src/dsp`
     gui/             (Phase 5) nanovg drawing + Cocoa view embedding
   tools/
@@ -125,8 +127,9 @@ MultiComp.clap/Contents/
 ```
 
 Validation is the gate — run it before claiming anything works. Current status:
-**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings.** The 5 skips are note-port and
-preset-discovery tests, correctly skipped for an audio effect that has neither yet.
+**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests and **33**
+offline audio checks. The 5 skips are note-port and preset-discovery tests, correctly
+skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
 check, because the very first `dlopen` of a new file pays for dyld mapping plus macOS's
@@ -253,6 +256,11 @@ on what the value means.
 to the user, because it is currently not used"). Otherwise a host's generic UI offers a
 control that silently does nothing, which reads as a bug. Drop the flag in the same change
 that makes the parameter work. `./build.sh --offline` prints the visible/hidden split.
+
+**Audio ports**: two stereo inputs (main + sidechain) and one stereo output. CLAP has no
+dedicated sidechain flag — the sidechain is identified by *not* carrying `IS_MAIN`. Hosts
+often leave it disconnected, so `process` must fall back to the main input rather than
+assuming `audio_inputs_count > 1`.
 
 **Defaults must leave the plugin transparent.** Inserting it and touching nothing may not
 change the signal. Ratio therefore defaults to 1:1, where the gain computer returns its

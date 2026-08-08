@@ -162,8 +162,34 @@ where the gain computer returns its input unchanged at every level and the appli
 exactly 1.0. Threshold stays at −18 dB, so raising ratio is the single gesture that starts
 compression. Guarded by a transparency check in `tools/offline`.
 
-**Phase 4 — Routing features.** External sidechain audio port, SC high-pass and listen,
-stereo link, mid/side, mix, auto-makeup, auto-release.
+**Phase 4 — Routing features. ✅ DONE.** All 20 parameters are live; nothing carries
+`NOT_IMPLEMENTED` any more.
+
+- **External sidechain**: a second stereo input port, identified by not carrying `IS_MAIN`
+  (CLAP has no dedicated sidechain flag). Falls back to the main input when the host has
+  not connected anything, so selecting External never silently mutes the detector.
+- **SC high-pass**: Butterworth biquad on the detector path only. The bottom of the range
+  (20 Hz) means *off*, so the default detector path is genuinely unfiltered.
+- **SC listen**: monitors the conditioned detector signal, post-filter.
+- **Stereo link**: per-channel detectors and envelopes, each channel's level blended toward
+  the loudest by the link amount, in dB.
+- **Mid-side**: encode/decode around the gain stage, exactly lossless so M/S at 1:1 is
+  transparent. The delay line still holds raw L/R, so bypass stays bit-exact.
+- **Mix**: dry and wet both come off the same delay line, so the dry path is already
+  latency-aligned and blending cannot comb-filter.
+- **Auto makeup**: half the reduction the curve would apply at 0 dBFS. Half rather than
+  full, because full compensation overshoots on real material that never sits at 0 dBFS.
+- **Auto release**: the release coefficient slides between a fast branch and the user's
+  setting according to current reduction depth — brief transients recover quickly,
+  sustained passages recover at the full release time.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test src/dsp`
+**27 tests, all passing**; `./build.sh --offline` **33 checks, all passing**, including
+external-sidechain ducking, SC high-pass rejection, link at 0/50/100%, mid-side
+transparency and parallel-mix blending.
+
+Coefficient updates (envelope `exp()`, biquad trig) are now cached against their inputs, so
+sample-dense automation no longer recomputes them on every event boundary.
 
 **Phase 5 — GUI shell.** Create a child `NSView` under the host's parent view, attach an
 `NSOpenGLContext`, init nanovg, clear to a colour, repaint from `clap.timer-support`
