@@ -9,6 +9,7 @@ import nvg "vendor:nanovg"
 draw_controls :: proc(g: ^Gui) {
 	vg := g.vg
 	draw_header(vg)
+	draw_history(g)
 	draw_bay_legends(vg)
 
 	buffer: [64]u8
@@ -191,6 +192,31 @@ draw_window :: proc(g: ^Gui) {
 	nvg.LineJoin(vg, .ROUND)
 	nvg.Stroke(vg)
 
+	// Live operating point: where on the curve the signal currently sits.
+	//
+	// Both coordinates come from the input level, with y taken from the same gain computer
+	// that drew the curve — so the dot is on the line by construction. Deriving y from the
+	// measured output instead (input minus gain reduction) looked reasonable but wandered:
+	// those are two separate meters with different ballistics, one a block peak and the
+	// other an instantaneous gain, so the pair never described a single point on the curve.
+	input_db := f32(g.bridge.meter(g.bridge.user, .Input))
+	if input_db > -60 {
+		level := clamp(input_db, -60, 0)
+		px := to_x(level)
+		py := to_y(clamp(f32(g.bridge.curve(g.bridge.user, f64(level))), -60, 0))
+
+		halo := nvg.RadialGradient(px, py, 1, 9, nvg.RGBA(255, 182, 72, 130), nvg.RGBA(255, 182, 72, 0))
+		nvg.BeginPath(vg)
+		nvg.Circle(vg, px, py, 9)
+		nvg.FillPaint(vg, halo)
+		nvg.Fill(vg)
+
+		nvg.BeginPath(vg)
+		nvg.Circle(vg, px, py, 3.2)
+		nvg.FillColor(vg, nvg.RGBA(255, 236, 200, 255))
+		nvg.Fill(vg)
+	}
+
 	nvg.Restore(vg)
 
 	// Readout, top left.
@@ -234,6 +260,10 @@ draw_meters :: proc(g: ^Gui) {
 	gr_lit := int(math.round(clamp(gr / 18, 0, 1) * METER_SEGMENTS))
 	out_lit := int(math.round(clamp((out + 30) / 36, 0, 1) * METER_SEGMENTS))
 
+	input := g.bridge.meter(g.bridge.user, .Input)
+	in_lit := int(math.round(clamp((input + 30) / 36, 0, 1) * METER_SEGMENTS))
+
+	draw_ladder(g.vg, IN_LADDER_X, in_lit, .Input)
 	draw_ladder(g.vg, GR_LADDER_X, gr_lit, .Gain_Reduction)
 	draw_ladder(g.vg, OUT_LADDER_X, out_lit, .Output)
 	draw_meter_scale(g.vg)
@@ -278,5 +308,125 @@ format_db :: proc(buffer: []u8, value: f64) -> string {
 	write(buffer, &n, ' ')
 	write(buffer, &n, 'd')
 	write(buffer, &n, 'B')
+	return string(buffer[:n])
+}
+
+
+//
+// Gain-reduction history
+//
+// A strip chart across the dead space in the header, between the dataplate and the
+// wordmark. Newest sample at the right, so it reads the way a tape moves.
+
+@(private = "file")
+draw_history :: proc(g: ^Gui) {
+	vg := g.vg
+	x, y, w, h := HISTORY_X, HISTORY_Y, HISTORY_W, HISTORY_H
+
+	// Recessed glass, same treatment as the transfer window.
+	nvg.BeginPath(vg)
+	nvg.RoundedRect(vg, x - 4, y - 4, w + 8, h + 8, 3)
+	nvg.FillColor(vg, hex(COLLAR_DARK))
+	nvg.Fill(vg)
+	nvg.BeginPath(vg)
+	nvg.RoundedRect(vg, x - 4, y - 4, w + 8, h + 8, 3)
+	nvg.StrokeColor(vg, nvg.RGBA(255, 255, 255, 30))
+	nvg.StrokeWidth(vg, 1)
+	nvg.Stroke(vg)
+
+	nvg.BeginPath(vg)
+	nvg.Rect(vg, x, y, w, h)
+	nvg.FillColor(vg, hex(DISPLAY_BG))
+	nvg.Fill(vg)
+
+	nvg.Save(vg)
+	nvg.Scissor(vg, x, y, w, h)
+
+	// Horizontal rules every 6 dB, with the numbers on the left.
+	nvg.FontFace(vg, FONT_MONO)
+	nvg.FontSize(vg, 8)
+	nvg.TextAlign(vg, .LEFT, .MIDDLE)
+	for db := f32(6); db < HISTORY_RANGE_DB; db += 6 {
+		ly := y + h * db / HISTORY_RANGE_DB
+		nvg.BeginPath(vg)
+		nvg.MoveTo(vg, x, ly)
+		nvg.LineTo(vg, x + w, ly)
+		nvg.StrokeColor(vg, nvg.RGBA(255, 182, 72, 26))
+		nvg.StrokeWidth(vg, 1)
+		nvg.Stroke(vg)
+
+		// Just the number: at 8pt across a 54pt strip, "-6.0 dB" is more ink than information.
+		buffer: [8]u8
+		nvg.FillColor(vg, nvg.RGBA(255, 182, 72, 95))
+		nvg.Text(vg, x + 4, ly - 5, format_int(buffer[:], -int(db)))
+	}
+
+	history := &g.history
+	count := history.filled
+	if count > 1 {
+		to_y :: proc(db: f32) -> f32 {
+			return HISTORY_Y + clamp(db, 0, HISTORY_RANGE_DB) / HISTORY_RANGE_DB * HISTORY_H
+		}
+
+		// Oldest sample at the left edge. `write` points at the next slot to fill, so the
+		// oldest is `filled` steps behind it.
+		start := (history.write - count + len(history.samples)) % len(history.samples)
+		step := w / f32(len(history.samples) - 1)
+
+		// Filled area first, then the trace on top of it.
+		nvg.BeginPath(vg)
+		nvg.MoveTo(vg, x + w - f32(count - 1) * step, y)
+		for i in 0 ..< count {
+			sample := history.samples[(start + i) % len(history.samples)]
+			nvg.LineTo(vg, x + w - f32(count - 1 - i) * step, to_y(sample))
+		}
+		nvg.LineTo(vg, x + w, y)
+		nvg.ClosePath(vg)
+		// Kept light: the strip sits in the header, where a solid block of amber would pull
+		// the eye away from the controls it is reporting on.
+		fill := nvg.LinearGradient(x, y, x, y + h, nvg.RGBA(255, 158, 44, 54), nvg.RGBA(255, 158, 44, 6))
+		nvg.FillPaint(vg, fill)
+		nvg.Fill(vg)
+
+		nvg.BeginPath(vg)
+		for i in 0 ..< count {
+			sample := history.samples[(start + i) % len(history.samples)]
+			px := x + w - f32(count - 1 - i) * step
+			py := to_y(sample)
+			if i == 0 {
+				nvg.MoveTo(vg, px, py)
+			} else {
+				nvg.LineTo(vg, px, py)
+			}
+		}
+		nvg.StrokeColor(vg, hex(DISPLAY_INK))
+		nvg.StrokeWidth(vg, 1.4)
+		nvg.LineJoin(vg, .ROUND)
+		nvg.Stroke(vg)
+	}
+
+	nvg.Restore(vg)
+
+	label_text(vg, x + w - 46, y + h - 6, "GAIN REDUCTION", 8, nvg.RGBA(255, 182, 72, 105))
+}
+
+// Whole numbers for the history grid, where a full "-6.0 dB" is more ink than information.
+format_int :: proc(buffer: []u8, value: int) -> string {
+	v := value
+	n := 0
+	write :: proc(buffer: []u8, n: ^int, b: u8) {
+		if n^ < len(buffer) {
+			buffer[n^] = b
+			n^ += 1
+		}
+	}
+	if v < 0 {
+		write(buffer, &n, '-')
+		v = -v
+	}
+	if v >= 10 {
+		write(buffer, &n, u8('0' + v / 10))
+	}
+	write(buffer, &n, u8('0' + v % 10))
 	return string(buffer[:n])
 }

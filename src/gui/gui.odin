@@ -40,11 +40,34 @@ Gui :: struct {
 	host_ticks:     u32,
 	seen_ticks:     u32,
 	fallback_timer: ^Timer,
+
+	history:        History,
+}
+
+// One gain-reduction sample per timer tick, so the strip chart scrolls at a steady rate.
+// Sampling in `render` instead would make it lurch, because a drag repaints far more often
+// than the timer fires.
+History :: struct {
+	samples: [int(HISTORY_W)]f32,
+	write:   int,
+	filled:  int,
+}
+
+history_push :: proc(g: ^Gui) {
+	if g.bridge.meter == nil {
+		return
+	}
+	g.history.samples[g.history.write] = f32(g.bridge.meter(g.bridge.user, .Gain_Reduction))
+	g.history.write = (g.history.write + 1) % len(g.history.samples)
+	if g.history.filled < len(g.history.samples) {
+		g.history.filled += 1
+	}
 }
 
 // Driven by clap.timer-support.
 tick_from_host :: proc(g: ^Gui) {
 	g.host_ticks += 1
+	history_push(g)
 	render(g)
 }
 
@@ -54,6 +77,7 @@ tick_fallback :: proc(g: ^Gui) {
 		g.seen_ticks = g.host_ticks // the host is driving; one repaint a frame is enough
 		return
 	}
+	history_push(g)
 	render(g)
 }
 

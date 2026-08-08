@@ -521,6 +521,10 @@
       <stop offset="0" stop-color="var(--nickel-1)"/>
       <stop offset="1" stop-color="var(--nickel-3)"/>
     </radialGradient>
+    <linearGradient id="grFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--amber)" stop-opacity=".21"/>
+      <stop offset="1" stop-color="var(--amber)" stop-opacity=".02"/>
+    </linearGradient>
     <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#fff" stop-opacity=".16"/>
       <stop offset=".5" stop-color="#fff" stop-opacity=".02"/>
@@ -577,6 +581,39 @@
          stroke="var(--legend)" stroke-width=".7" opacity=".20"/>`;
   g += label(pCx, pY + 34, "MODEL MC-1 \u00b7 SER 0001", 7, 500, ".08em", "var(--legend-dim)");
 
+  // --- gain-reduction history: a strip chart across the dead space in the header ---
+  // Spans the ENVELOPE and TRANSFER bays (440..790); the bezel lands on those boundaries.
+  const HX = 444, HY = 16, HW = 342, HH = 54, H_RANGE = 18;
+  g += `<rect x="${HX-4}" y="${HY-4}" width="${HW+8}" height="${HH+8}" rx="3" fill="var(--collar-2)"/>`;
+  g += `<rect x="${HX-4}" y="${HY-4}" width="${HW+8}" height="${HH+8}" rx="3" fill="none" stroke="rgba(255,255,255,.12)"/>`;
+  g += `<rect x="${HX}" y="${HY}" width="${HW}" height="${HH}" rx="1" fill="var(--display-bg)"/>`;
+
+  for (let db = 6; db < H_RANGE; db += 6) {
+    const ly = HY + HH * db / H_RANGE;
+    g += `<line x1="${HX}" y1="${ly}" x2="${HX+HW}" y2="${ly}" stroke="var(--display-ink)" stroke-opacity=".10"/>`;
+    g += `<text x="${HX+4}" y="${ly-5}" font-family="ui-monospace,'SF Mono',Menlo,monospace"
+            font-size="8" fill="var(--display-ink)" opacity=".37">-${db}</text>`;
+  }
+
+  // A plausible programme trace: 0 dB at the top, reduction hanging downward.
+  {
+    let d = "", area = "";
+    for (let i = 0; i <= HW; i += 2) {
+      const t = i / HW;
+      const gr = Math.max(0, 5.5 + 3.4 * Math.sin(t * 21) * Math.sin(t * 6.3 + 0.7) + 1.6 * Math.sin(t * 47));
+      const px = HX + i;
+      const py = HY + Math.min(gr, H_RANGE) / H_RANGE * HH;
+      d += (i ? "L" : "M") + px.toFixed(1) + " " + py.toFixed(1) + " ";
+      area += (i ? "L" : "M" + px.toFixed(1) + " " + HY + " L") + px.toFixed(1) + " " + py.toFixed(1) + " ";
+    }
+    area += `L${HX+HW} ${HY} Z`;
+    g += `<path d="${area}" fill="url(#grFill)"/>`;
+    g += `<path d="${d}" fill="none" stroke="var(--display-ink)" stroke-width="1.4" stroke-linejoin="round"/>`;
+  }
+
+  g += `<rect x="${HX}" y="${HY}" width="${HW}" height="${HH}" rx="1" fill="url(#glass)"/>`;
+  g += label(HX + HW - 46, HY + HH - 6, "GAIN REDUCTION", 8, 600, ".14em", "var(--display-ink)");
+
   // wordmark (right)
   g += `<g transform="translate(${W-CHEEK-22},52) scale(.86,1)">
           ${label(0, 0, "MULTICOMP", 38, 800, ".04em", "var(--legend)", "end")}
@@ -629,7 +666,12 @@
   const cv = curvePath(wx, wy, ww, wh, -18, 6, 6);
   g += `<path d="${cv.d}" fill="none" stroke="var(--display-ink)" stroke-width="2.2" filter="url(#glow)" opacity=".85"/>`;
   g += `<path d="${cv.d}" fill="none" stroke="var(--display-ink)" stroke-width="1.4"/>`;
-  g += `<circle id="opPoint" cx="${cv.X(-12)}" cy="${cv.Y(cv.out(-12))}" r="3.4" fill="var(--display-ink)" filter="url(#glow)"/>`;
+  // Live operating point: where on the curve the signal currently sits. Both coordinates
+  // derive from the input level, with y from the same curve function - so it is on the line
+  // by construction. Deriving y from the measured output instead wanders, because input and
+  // gain reduction are separate meters with different ballistics.
+  g += `<circle id="opHalo" cx="${cv.X(-12)}" cy="${cv.Y(cv.out(-12))}" r="9" fill="var(--display-ink)" opacity=".28" filter="url(#glow)"/>`;
+  g += `<circle id="opPoint" cx="${cv.X(-12)}" cy="${cv.Y(cv.out(-12))}" r="3.2" fill="#ffecc8"/>`;
   // Readout sits top left, label and value together in the same monospace face.
   //
   // A compressor's output is never louder than its input, so the curve can never rise above
@@ -671,14 +713,16 @@
   // --- meter bay ---
   g += bay(METER_X, METER_W, T_Y, B_Y + B_H - T_Y, "METERS");
   const mTop = 140, mH = GR_SEGS * 14 - 2;
-  g += ladder(1068, mTop, 20, GR_SEGS, 4, "gr");
-  g += ladder(1116, mTop, 20, OUT_SEGS, 9, "out");
+  g += ladder(1060, mTop, 16, OUT_SEGS, 8, "out");   // IN, same scale as OUT
+  g += ladder(1082, mTop, 16, GR_SEGS, 6, "gr");
+  g += ladder(1104, mTop, 16, OUT_SEGS, 9, "out");
   const scale = ["+6","+3","0","-3","-6","-9","-12","-18","-24","-30"];
   scale.forEach((sv, i) => {
-    g += label(1112, mTop + 10 + i * (mH / (scale.length - 0.5)), sv, 7, 500, ".02em", "var(--legend-dim)", "end");
+    g += label(1146, mTop + 10 + i * (mH / (scale.length - 0.5)), sv, 7, 500, ".02em", "var(--legend-dim)", "end");
   });
-  g += label(1078, mTop + mH + 17, "GR", 9, 700, ".12em", "var(--legend)");
-  g += label(1126, mTop + mH + 17, "OUT", 9, 700, ".12em", "var(--legend)");
+  g += label(1068, mTop + mH + 17, "IN", 9, 700, ".12em", "var(--legend)");
+  g += label(1090, mTop + mH + 17, "GR", 9, 700, ".12em", "var(--legend)");
+  g += label(1112, mTop + mH + 17, "OUT", 9, 700, ".12em", "var(--legend)");
 
   // --- screws ---
   [[FX+13,14],[W-CHEEK-13,14],[FX+13,H-14],[W-CHEEK-13,H-14]]
@@ -690,6 +734,7 @@
   const grSegs  = [...svg.querySelectorAll('.seg[data-kind="gr"]')];
   const outSegs = [...svg.querySelectorAll('.seg[data-kind="out"]')];
   const opPoint = svg.querySelector("#opPoint");
+  const opHalo  = svg.querySelector("#opHalo");
   const grRead  = svg.querySelector("#grRead");
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -708,8 +753,9 @@
 
       grRead.textContent = "−" + gr.toFixed(1) + " dB";
       const db = -30 + env * 26;
-      opPoint.setAttribute("cx", cv.X(db).toFixed(1));
-      opPoint.setAttribute("cy", cv.Y(cv.out(db)).toFixed(1));
+      const ox = cv.X(db).toFixed(1), oy = cv.Y(cv.out(db)).toFixed(1);
+      opPoint.setAttribute("cx", ox); opPoint.setAttribute("cy", oy);
+      opHalo.setAttribute("cx", ox);  opHalo.setAttribute("cy", oy);
     }, 90);
   }
 

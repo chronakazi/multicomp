@@ -143,15 +143,30 @@ WINDOW_Y :: f32(126)
 WINDOW_W :: f32(136)
 WINDOW_H :: f32(110)
 
-// Meter ladders
+// Meter ladders: input, gain reduction, output. Three fit the 100pt bay at 16pt wide,
+// with the dB scale right-aligned against the output ladder that it measures — gain
+// reduction needs no numbers, since the exact figure is in the transfer window.
 METER_SEGMENTS :: 16
 METER_TOP :: f32(140)
 METER_SEG_H :: f32(12)
 METER_SEG_GAP :: f32(2)
-GR_LADDER_X :: f32(1068)
-OUT_LADDER_X :: f32(1116)
-LADDER_W :: f32(20)
-METER_SCALE_X :: f32(1112)
+LADDER_W :: f32(16)
+IN_LADDER_X :: f32(1060)
+GR_LADDER_X :: f32(1082)
+OUT_LADDER_X :: f32(1104)
+// Right of all three rather than between them. It is the dBFS scale for the level meters;
+// sitting it between GR and OUT made it look like it belonged to gain reduction, which
+// counts a different quantity over a different range.
+METER_SCALE_X :: f32(1146)
+
+// Gain-reduction history, a strip chart in the header. One column per timer tick, so the
+// width is also how many samples are kept. Spans the ENVELOPE and TRANSFER bays (440..790),
+// with the bezel landing exactly on those boundaries.
+HISTORY_X :: f32(444)
+HISTORY_Y :: f32(16)
+HISTORY_W :: f32(342)
+HISTORY_H :: f32(54)
+HISTORY_RANGE_DB :: f32(18)
 
 // Maker dataplate
 PLATE_X :: f32(46)

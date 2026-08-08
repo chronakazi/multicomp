@@ -260,9 +260,37 @@ full-queue behaviour, and **21** GUI checks — every control on the faceplate, 
 clickable, knob caps rendering, the curve drawn in amber, the layout covering all 20
 parameters.
 
-**Phase 7 — Visual feedback.** Input/output/GR meters, the transfer curve with the live
-operating point drawn on it, and a scrolling gain-reduction history. These are what make a
-compressor usable, and they are the reason nanovg was chosen over hand-rolled drawing.
+**Phase 7 — Visual feedback. ✅ DONE.** Three meters, the live operating point, and a
+scrolling gain-reduction history.
+
+- **Input meter added**, so the bay now reads IN / GR / OUT — the classic trio. Input is
+  measured *after* the trim, because that is the level the threshold compares against and
+  therefore the x axis of the transfer window. The dBFS scale moved right of all three
+  ladders: between GR and OUT it looked like it belonged to gain reduction, which counts a
+  different quantity over a different range.
+- **Meter ballistics are now buffer-independent.** They rise instantly and fall at a fixed
+  dB per second. The previous version decayed a fixed amount per `process` call, so the
+  same plugin metered roughly eight times faster at a 64-sample buffer than at 512.
+- **Live operating point** on the transfer curve. Its y is the *measured* output, not the
+  curve's value at that input, so while the envelope is still moving the dot rides off the
+  curve — attack and release made visible.
+- **Gain-reduction history**: a strip chart in the header spanning the ENVELOPE and TRANSFER
+  bays, its bezel landing on those boundaries. 0 dB at the top with reduction hanging
+  downward, newest sample at the right. Sampled on the timer tick rather than in `render`,
+  or a drag — which repaints far more often than the timer fires — would make it lurch.
+
+**Post-Phase-7 fix.** The operating point wavered around the curve instead of tracking it.
+Its x came from the input meter and its y from `input − gain reduction`: two separate
+meters with different ballistics (20 vs 36 dB/s), one a block peak and the other an
+instantaneous gain, so the pair never described a single point on the curve. Both
+coordinates now derive from the input level, with y taken from the same gain computer that
+draws the line — the dot is on the curve by construction, which guicheck asserts by
+sampling the exact computed position.
+
+Verified: validator **21/16 passed/0 failed/0 warnings**, **27** DSP tests, **4** plugin
+tests, **33** offline audio checks and **25** GUI checks, including that reduction fills
+downward from the top, that the space below the trace stays clear, and that the input
+ladder renders.
 
 **Phase 8 — Polish.** Presets (`clap.preset-load`), `clap.remote-controls` for hardware
 surfaces, param modulation, GUI resize, and a proper `Info.plist` + code signing for

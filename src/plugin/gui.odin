@@ -240,6 +240,8 @@ make_bridge :: proc(self: ^Multicomp) -> gui.Bridge {
 		meter = proc(user: rawptr, kind: gui.Meter_Kind) -> f64 {
 			self := (^Multicomp)(user)
 			switch kind {
+			case .Input:
+				return read_published(&self.meter_in)
 			case .Gain_Reduction:
 				return read_published(&self.meter_gr)
 			case .Output:

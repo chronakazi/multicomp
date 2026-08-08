@@ -349,7 +349,7 @@ draw_selector :: proc(vg: ^nvg.Context, control: Control, index: int, hot: bool)
 //
 
 // `lit` is how many segments are on, counted from the top for gain reduction and from the
-// bottom for output — reduction grows downward, level grows upward.
+// bottom for levels — reduction grows downward, level grows upward.
 draw_ladder :: proc(vg: ^nvg.Context, x: f32, lit: int, kind: Meter_Kind) {
 	for i in 0 ..< METER_SEGMENTS {
 		y := METER_TOP + f32(i) * (METER_SEG_H + METER_SEG_GAP)
@@ -398,6 +398,7 @@ draw_meter_scale :: proc(vg: ^nvg.Context) {
 	}
 
 	bottom := METER_TOP + height + 17
+	label_text(vg, IN_LADDER_X + LADDER_W / 2, bottom, "IN", 10, hex(LEGEND))
 	label_text(vg, GR_LADDER_X + LADDER_W / 2, bottom, "GR", 10, hex(LEGEND))
 	label_text(vg, OUT_LADDER_X + LADDER_W / 2, bottom, "OUT", 10, hex(LEGEND))
 }

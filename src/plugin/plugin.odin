@@ -76,6 +76,7 @@ Multicomp :: struct {
 
 	// audio -> GUI. f64 bits, written atomically by the audio thread.
 	mirror:            [Param_Id]u64,
+	meter_in:          u64,
 	meter_gr:          u64,
 	meter_out:         u64,
 }
@@ -387,7 +388,7 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 	event_count := process.in_events.size(process.in_events)
 	next_event: u32 = 0
 	frame: u32 = 0
-	peak_out := 0.0
+	peak_in, peak_out := 0.0, 0.0
 
 	// Split the block at every event boundary so parameter changes land on the exact
 	// sample the host asked for, rather than all at once at the start of the block.
@@ -408,43 +409,57 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 			block_end = min(header.time, process.frames_count)
 		}
 
-		peak_out = max(peak_out, process_block(self, process, frame, block_end))
+		block_in, block_out := process_block(self, process, frame, block_end)
+		peak_in = max(peak_in, block_in)
+		peak_out = max(peak_out, block_out)
 		frame = block_end
 	}
 
-	publish_meters(self, peak_out)
+	publish_meters(self, peak_in, peak_out, f64(process.frames_count))
 	publish_values(self)
 	return .CONTINUE
 }
 
-// Meter ballistics: rise instantly, fall smoothly, so a peak is visible but the display
-// does not flicker. Decay is per block, which is close enough for a meter.
-METER_DECAY :: 0.82
+// Meter ballistics: rise instantly, fall at a fixed rate in dB per second.
+//
+// Expressing the fall per second rather than per block matters — the previous version
+// decayed a fixed amount each call, so the meters fell roughly eight times faster at a
+// 64-sample buffer than at 512, and the same plugin metered differently depending on the
+// host's buffer setting.
+METER_FALL_DB_PER_SEC :: 20.0
+GR_FALL_DB_PER_SEC :: 36.0
 
-publish_meters :: proc "contextless" (self: ^Multicomp, peak_out: f64) {
+publish_meters :: proc "contextless" (self: ^Multicomp, peak_in, peak_out, frames: f64) {
+	seconds := self.sample_rate > 0 ? frames / self.sample_rate : 0
+
+	// Gain reduction falls back toward 0, so its floor is 0 rather than silence.
 	gr := -self.bands[0].channels[0].last_gain_db
-	previous_gr := read_published(&self.meter_gr)
-	publish(&self.meter_gr, max(gr, previous_gr * METER_DECAY))
+	decay_toward(&self.meter_gr, gr, GR_FALL_DB_PER_SEC * seconds, 0)
 
-	out_db := dsp.linear_to_db(peak_out)
-	previous_out := read_published(&self.meter_out)
-	decayed := previous_out <= dsp.SILENCE_DB ? dsp.SILENCE_DB : previous_out - 3
-	publish(&self.meter_out, max(out_db, decayed))
+	fall := METER_FALL_DB_PER_SEC * seconds
+	decay_toward(&self.meter_in, dsp.linear_to_db(peak_in), fall, dsp.SILENCE_DB)
+	decay_toward(&self.meter_out, dsp.linear_to_db(peak_out), fall, dsp.SILENCE_DB)
 }
 
-// Returns the peak output magnitude over the block, for metering.
+@(private = "file")
+decay_toward :: proc "contextless" (slot: ^u64, value, fall, floor: f64) {
+	previous := read_published(slot)
+	publish(slot, max(value, max(previous - fall, floor)))
+}
+
+// Returns the peak input and output magnitudes over the block, for metering. The input
+// figure is taken after the trim, because that is the level the threshold is compared
+// against — and therefore the x axis of the transfer window.
 process_block :: proc "contextless" (
 	self: ^Multicomp,
 	process: ^clap.Process,
 	start, end: u32,
-) -> f64 {
+) -> (peak_in: f64, peak_out: f64) {
 	input := &process.audio_inputs[0]
 	output := &process.audio_outputs[0]
 	if input.data32 == nil || output.data32 == nil {
-		return 0
+		return 0, 0
 	}
-
-	peak := 0.0
 
 	channels := min(int(input.channel_count), int(output.channel_count), MAX_CHANNELS)
 	band := &self.bands[0]
@@ -498,16 +513,15 @@ process_block :: proc "contextless" (
 		// through while still costing the same latency the host was told about.
 		dry: [MAX_CHANNELS]f64
 		for channel in 0 ..< channels {
-			dry[channel] = dsp.delay_line_tick(
-				&self.lookahead[channel],
-				f64(input.data32[channel][i]),
-			)
+			raw := f64(input.data32[channel][i])
+			peak_in = max(peak_in, abs(raw * input_trim))
+			dry[channel] = dsp.delay_line_tick(&self.lookahead[channel], raw)
 		}
 
 		if bypassed {
 			for channel in 0 ..< channels {
 				output.data32[channel][i] = f32(dry[channel])
-				peak = max(peak, abs(dry[channel]))
+				peak_out = max(peak_out, abs(dry[channel]))
 			}
 			continue
 		}
@@ -517,7 +531,7 @@ process_block :: proc "contextless" (
 			for channel in 0 ..< channels {
 				value := detector[channel] * output_trim
 				output.data32[channel][i] = f32(value)
-				peak = max(peak, abs(value))
+				peak_out = max(peak_out, abs(value))
 			}
 			continue
 		}
@@ -543,11 +557,11 @@ process_block :: proc "contextless" (
 		for channel in 0 ..< channels {
 			blended := (dry[channel] + (wet[channel] - dry[channel]) * mix) * output_trim
 			output.data32[channel][i] = f32(blended)
-			peak = max(peak, abs(blended))
+			peak_out = max(peak_out, abs(blended))
 		}
 	}
 
-	return peak
+	return
 }
 
 handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header) {

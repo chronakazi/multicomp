@@ -10,6 +10,7 @@ package gui
 // Every one of these is called on the main thread, from inside a render or an event.
 
 Meter_Kind :: enum {
+	Input, // input peak after trim, dBFS — the transfer window's x axis
 	Gain_Reduction, // dB of reduction, positive
 	Output, // output peak, dBFS
 }

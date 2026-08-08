@@ -156,7 +156,7 @@ MultiComp.clap/Contents/
 
 Validation is the gate — run it before claiming anything works. Current status:
 **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **4**
-plugin tests, **33** offline audio checks and **21** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
+plugin tests, **33** offline audio checks and **25** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
@@ -318,6 +318,9 @@ predates it. Absence there is not evidence the flag is missing; check the raw
   them. Always call `request_flush` after queueing, or edits stall on a stopped transport.
 - Adding a parameter means adding it to **both** `PARAMS` and `gui.CONTROLS`; the ids in
   `gui/layout.odin` mirror `Param_Id`. `./build.sh --gui` asserts the counts match.
+- Meters must rise instantly and fall at a fixed rate **per second**, not per `process`
+  call — otherwise the same plugin meters at different speeds depending on the host's
+  buffer size.
 - **Never rely on `clap.timer-support` alone for repainting.** It is optional, and a host
   may register a timer and then never tick it, which leaves a correct panel frozen on its
   first frame. `gui/` keeps a run-loop `NSTimer` fallback that stands down while host ticks

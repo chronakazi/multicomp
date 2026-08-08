@@ -149,9 +149,10 @@ main :: proc() {
 		fmt.tprintf("rgb(%d,%d,%d)", plate.r, plate.g, plate.b),
 	)
 
-	// The plate is a vertical gradient: lighter at the top than the bottom.
-	top := luma(at(pixels, 600, 20))
-	bottom := luma(at(pixels, 600, H - 20))
+	// The plate is a vertical gradient: lighter at the top than the bottom. Sampled below
+	// the header, because the gain-reduction strip chart now occupies its middle.
+	top := luma(at(pixels, 600, 92))
+	bottom := luma(at(pixels, 600, H - 22))
 	check("plate gradient runs light to dark", top > bottom + 8, fmt.tprintf("%d -> %d", top, bottom))
 
     // Engraved lines: a dark groove with a lit lower lip.
@@ -252,6 +253,71 @@ main :: proc() {
 		fmt.tprintf("%d pixels differ", differing),
 	)
 	stub_offset = 0
+
+	// Empty first: with no samples yet the strip is bare glass. Checked before filling it,
+	// because once the trace is there the lit area legitimately covers this point.
+	hx0, hy0 := int(gui.HISTORY_X), int(gui.HISTORY_Y)
+	strip := at(pixels, hx0 + 20, hy0 + 4)
+	check(
+		"history strip is a dark inset",
+		luma(strip) < luma(plate),
+		fmt.tprintf("rgb(%d,%d,%d)", strip.r, strip.g, strip.b),
+	)
+
+	// The history strip should be drawn and carrying a trace. It is filled by the timer
+	// rather than by rendering, so push a full strip's worth first — a partial fill only
+	// draws across the right-hand portion, which is correct but makes a poor test target.
+	for i in 0 ..< int(gui.HISTORY_W) {
+		gui.history_push(&ui)
+	}
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
+	nvg.BeginFrame(vg, W, H, 1)
+	gui.draw_panel(vg)
+	gui.draw_controls(&ui)
+	nvg.EndFrame(vg)
+	gl.ReadPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(pixels))
+
+	hx, hy := int(gui.HISTORY_X), int(gui.HISTORY_Y)
+	hw, hh := int(gui.HISTORY_W), int(gui.HISTORY_H)
+
+	// 0 dB sits at the top and reduction hangs downward, so the lit area is *between* the
+	// top edge and the trace — the bar grows down as the compressor works.
+	filled := at(pixels, hx + hw / 2, hy + 10)
+	check(
+		"reduction is filled from the top down",
+		filled.r > filled.b + 20,
+		fmt.tprintf("rgb(%d,%d,%d)", filled.r, filled.g, filled.b),
+	)
+
+	// 6.5 dB across an 18 dB range is about a third down, so below the trace stays dark.
+	below := at(pixels, hx + hw / 2, hy + hh - 8)
+	check(
+		"space below the trace stays clear",
+		below.r < 60,
+		fmt.tprintf("rgb(%d,%d,%d)", below.r, below.g, below.b),
+	)
+
+	// Three ladders now, not two.
+	in_lit := at(pixels, int(gui.IN_LADDER_X) + 8, int(gui.METER_TOP) + 200)
+	check(
+		"input ladder renders",
+		in_lit.g > 60 || in_lit.r > 60,
+		fmt.tprintf("rgb(%d,%d,%d)", in_lit.r, in_lit.g, in_lit.b),
+	)
+
+	// The operating point must sit exactly on the curve, not near it. Both its coordinates
+	// derive from the input level, with y from the same gain computer that drew the line,
+	// so this is exact rather than approximate.
+	to_x :: proc(db: f32) -> f32 {return gui.WINDOW_X + (db + 60) / 60 * gui.WINDOW_W}
+	to_y :: proc(db: f32) -> f32 {return gui.WINDOW_Y + gui.WINDOW_H - (db + 60) / 60 * gui.WINDOW_H}
+
+	// Stub: -12 dBFS in, 4:1 above a 6 dB knee at -18, so the curve gives -16.5 dB out.
+	dot := at(pixels, int(to_x(-12)), int(to_y(-16.5)))
+	check(
+		"operating point sits on the curve",
+		dot.r > 200 && dot.g > 170 && dot.b > 120,
+		fmt.tprintf("rgb(%d,%d,%d)", dot.r, dot.g, dot.b),
+	)
 
 	// At 1:1 the curve *is* the unity diagonal and runs through the top-right corner of the
 	// window. That is why the gain-reduction readout sits bottom right: the two shared a
@@ -392,7 +458,15 @@ stub_bridge :: proc() -> gui.Bridge {
 		end_edit = proc(user: rawptr, param: u32) {},
 		reset = proc(user: rawptr, param: u32) {},
 		meter = proc(user: rawptr, kind: gui.Meter_Kind) -> f64 {
-			return kind == .Gain_Reduction ? 6.5 : -9
+			switch kind {
+			case .Input:
+				return -12
+			case .Gain_Reduction:
+				return 6.5
+			case .Output:
+				return -9
+			}
+			return 0
 		},
 		curve = proc(user: rawptr, input_db: f64) -> f64 {
 			if stub_unity {
