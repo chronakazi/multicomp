@@ -69,9 +69,11 @@ gui_ext := ext.Plugin_Gui {
 	},
 
 	set_scale = proc "c" (plugin: ^clap.Plugin, scale: f64) -> bool {
-		self := from_plugin(plugin)
-		self.ui.scale = f32(scale)
-		return true
+		// Honest refusal: the panel is a fixed 1180x460 and would not honour a host
+		// scale, so claiming success would just show a wrongly sized window. GUI
+		// resize (Phase 8) revisits this. Retina backing is handled separately, per
+		// frame, from the view's backingScaleFactor.
+		return false
 	},
 
 	get_size = proc "c" (plugin: ^clap.Plugin, width, height: ^u32) -> bool {
@@ -213,9 +215,12 @@ make_bridge :: proc(self: ^Multicomp) -> gui.Bridge {
 			value := clamp_param(id, p.min + normalized * (p.max - p.min))
 
 			// Publish immediately so the knob tracks the mouse even when the host is not
-			// processing audio; the audio thread will land on the same value.
-			publish(&self.mirror[id], value)
-			ui_queue_push(&self.ui_queue, {kind = .Value, param = param, value = value})
+			// processing audio; the audio thread will land on the same value. Only on a
+			// successful push, though - a dropped edit must not leave the mirror showing
+			// a value the DSP never applied.
+			if ui_queue_push(&self.ui_queue, {kind = .Value, param = param, value = value}) {
+				publish(&self.mirror[id], value)
+			}
 			request_flush(self)
 		},
 
@@ -232,8 +237,9 @@ make_bridge :: proc(self: ^Multicomp) -> gui.Bridge {
 			}
 			id := Param_Id(param)
 			value := PARAMS[id].default
-			publish(&self.mirror[id], value)
-			ui_queue_push(&self.ui_queue, {kind = .Value, param = param, value = value})
+			if ui_queue_push(&self.ui_queue, {kind = .Value, param = param, value = value}) {
+				publish(&self.mirror[id], value)
+			}
 			request_flush(self)
 		},
 
@@ -252,9 +258,16 @@ make_bridge :: proc(self: ^Multicomp) -> gui.Bridge {
 
 		curve = proc(user: rawptr, input_db: f64) -> f64 {
 			self := (^Multicomp)(user)
-			// Sampled from the band's own gain computer, so the window can never show a
-			// curve the DSP is not applying.
-			return dsp.gain_computer_output_db(self.bands[0].computer, input_db)
+			// Built from the mirrored parameters rather than read from the band: the
+			// audio thread owns the band's computer, and reading it here would be a
+			// torn-read race. The mirror is atomic, so the window always shows a real
+			// curve - never a half-updated one.
+			computer := make_curve(
+				read_published(&self.mirror[.Threshold]),
+				read_published(&self.mirror[.Ratio]),
+				read_published(&self.mirror[.Knee]),
+			)
+			return dsp.gain_computer_output_db(computer, input_db)
 		},
 	}
 }

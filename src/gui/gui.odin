@@ -28,7 +28,6 @@ Gui :: struct {
 	vg:         ^nvg.Context,
 	attached:   bool,
 	visible:    bool,
-	scale:      f32, // host-requested UI scale, separate from Retina backing scale
 	fonts_ok:   bool,
 	bridge:     Bridge,
 	drag:       Drag,
@@ -40,6 +39,10 @@ Gui :: struct {
 	host_ticks:     u32,
 	seen_ticks:     u32,
 	fallback_timer: ^Timer,
+
+	// Last backing scale rendered at, so a window migrating between Retina and
+	// non-Retina displays triggers a drawable update.
+	last_backing:   f32,
 
 	history:        History,
 }
@@ -103,7 +106,6 @@ create :: proc(g: ^Gui) -> bool {
 		0,
 	}
 
-	g.scale = 1
 	g.visible = false
 	g.attached = false
 	g.drag.control = -1
@@ -228,7 +230,13 @@ render :: proc(g: ^Gui) {
 	}
 
 	// nanovg works in points and scales its own geometry; the GL viewport is in pixels.
+	// If the backing scale changed - the host window moved across displays - the
+	// drawable is stale and must be re-sized before the viewport is set from it.
 	backing := view_backing_scale(g.view)
+	if backing != g.last_backing {
+		gl_context_update(g.gl_context)
+		g.last_backing = backing
+	}
 	gl.Viewport(0, 0, i32(f32(WIDTH) * backing), i32(f32(HEIGHT) * backing))
 
 	gl.ClearColor(PANEL_CLEAR.r, PANEL_CLEAR.g, PANEL_CLEAR.b, 1)

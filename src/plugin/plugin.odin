@@ -129,10 +129,22 @@ drain_ui :: proc "contextless" (self: ^Multicomp, out_events: ^clap.Output_Event
 
 		switch event.kind {
 		case .Value:
+			// A drag enqueues a value per mouse event, faster than blocks drain them.
+			// Collapse a run of edits to one control into its newest member - the
+			// intermediate points are of no interest to the DSP or the automation lane.
 			value := event.value
+			for {
+				next, more := ui_queue_peek(&self.ui_queue)
+				if !more || next.kind != .Value || next.param != event.param {
+					break
+				}
+				value = next.value
+				ui_queue_pop(&self.ui_queue)
+			}
+
 			if is_valid_param(event.param) {
 				id := Param_Id(event.param)
-				value = clamp_param(id, event.value)
+				value = clamp_param(id, value)
 				self.values[id] = value
 				if id == .Lookahead {
 					request_latency_update(self)
@@ -142,10 +154,14 @@ drain_ui :: proc "contextless" (self: ^Multicomp, out_events: ^clap.Output_Event
 			push_param_value(out_events, event.param, value)
 
 		case .Gesture_Begin:
-			push_gesture(out_events, event.param, .PARAM_GESTURE_BEGIN)
+			if is_valid_param(event.param) {
+				push_gesture(out_events, event.param, .PARAM_GESTURE_BEGIN)
+			}
 
 		case .Gesture_End:
-			push_gesture(out_events, event.param, .PARAM_GESTURE_END)
+			if is_valid_param(event.param) {
+				push_gesture(out_events, event.param, .PARAM_GESTURE_END)
+			}
 		}
 	}
 }
@@ -313,18 +329,22 @@ reset :: proc "c" (plugin: ^clap.Plugin) {
 	sync_dsp(self)
 }
 
-// The static curve as configured by the current parameter values. Shared by sync_dsp
-// and the auto-makeup target, so what is displayed, applied and compensated for can
-// never disagree.
-curve_from_values :: proc "contextless" (self: ^Multicomp) -> dsp.Gain_Computer {
+// The static curve for given settings, with the top of the ratio range mapped to
+// limiting. Shared by sync_dsp, the auto-makeup target and the GUI's transfer window,
+// so what is displayed, applied and compensated for can never disagree.
+make_curve :: proc "contextless" (threshold, ratio, knee: f64) -> dsp.Gain_Computer {
 	computer: dsp.Gain_Computer
-	ratio := self.values[.Ratio]
 	if ratio >= RATIO_MAX {
-		dsp.gain_computer_set_limiting(&computer, self.values[.Threshold], self.values[.Knee])
+		dsp.gain_computer_set_limiting(&computer, threshold, knee)
 	} else {
-		dsp.gain_computer_set(&computer, self.values[.Threshold], ratio, self.values[.Knee])
+		dsp.gain_computer_set(&computer, threshold, ratio, knee)
 	}
 	return computer
+}
+
+// The curve as configured by the current parameter values.
+curve_from_values :: proc "contextless" (self: ^Multicomp) -> dsp.Gain_Computer {
+	return make_curve(self.values[.Threshold], self.values[.Ratio], self.values[.Knee])
 }
 
 gain_target :: proc "contextless" (self: ^Multicomp, stage: Gain_Stage) -> f64 {

@@ -25,7 +25,7 @@ FINE_DIVISOR :: f32(6)
 
 Drag :: struct {
 	control:    int, // index into CONTROLS, -1 when idle
-    start_y:    f32,
+	start_y:    f32,
 	start_value: f64,
 	editing:    bool,
 }
@@ -60,6 +60,7 @@ ensure_view_class :: proc() -> NS.Class {
 	NS.class_addMethod(cls, NS.sel_registerName("isFlipped"), auto_cast is_flipped, "B@:")
 	NS.class_addMethod(cls, NS.sel_registerName("acceptsFirstMouse:"), auto_cast accepts_first_mouse, "B@:@")
 	NS.class_addMethod(cls, NS.sel_registerName("tick:"), auto_cast on_tick, "v@:@")
+	NS.class_addMethod(cls, NS.sel_registerName("viewDidMoveToWindow"), auto_cast on_moved_to_window, "v@:")
 
 	NS.objc_registerClassPair(cls)
 	panel_class = cls
@@ -124,6 +125,22 @@ on_tick :: proc "c" (self: NS.id, cmd: NS.SEL, timer: NS.id) {
 	}
 }
 
+// The GL drawable tracks the window; without this the context can keep rendering into a
+// stale drawable after the view is reparented or the window changes displays.
+@(private = "file")
+on_moved_to_window :: proc "c" (self: NS.id, cmd: NS.SEL) {
+	// NSView's default implementation does bookkeeping of its own - forward to it.
+	if super := NS.objc_lookUpClass("NSView"); super != nil {
+		if imp := NS.class_getMethodImplementation(super, cmd); imp != nil {
+			(auto_cast imp)(self, cmd)
+		}
+	}
+	g := gui_of(self)
+	if g != nil && g.gl_context != nil {
+		gl_context_update(g.gl_context)
+	}
+}
+
 @(private = "file")
 on_mouse_down :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 	context = runtime.default_context()
@@ -143,7 +160,9 @@ on_mouse_down :: proc "c" (self: NS.id, cmd: NS.SEL, event: NS.id) {
 	param := control.param
 
 	// Double-click restores the factory value, the convention everywhere else in a DAW.
-	if click_count(event) >= 2 {
+	// Knobs only: for discrete controls a second click is just another press, and
+	// resetting them would fight the first click's advance.
+	if click_count(event) >= 2 && (control.kind == .Knob || control.kind == .Hero) {
 		if g.bridge.reset != nil {
 			g.bridge.begin_edit(g.bridge.user, param)
 			g.bridge.reset(g.bridge.user, param)

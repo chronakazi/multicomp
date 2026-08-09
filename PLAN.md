@@ -317,10 +317,10 @@ the validator could never reach, all now fixed and locked in with new offline ch
   while applying the clamped one. The host now records what the DSP actually applied.
 
 Also from the review, a deliberate seam widening for the planned 3-band crossover
-version: `sync_dsp` and the GR meter now iterate `band_count` rather than touching
-`bands[0]` directly, so growing the slice cannot leave band 0 special-cased. The
-parameter table stays flat on purpose — per-band parameter pages get their own id
-scheme when they arrive, and the `(id, value)` state format already tolerates it.
+version: `sync_dsp` now iterates `band_count` rather than touching `bands[0]` directly,
+so growing the slice cannot leave band 0 special-cased. The parameter table stays flat
+on purpose — per-band parameter pages get their own id scheme when they arrive, and the
+`(id, value)` state format already tolerates it.
 
 Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test src/dsp`
 **27** and `odin test src/plugin` **4**, all passing; `./build.sh --offline` **42
@@ -357,6 +357,45 @@ Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test sr
 **27** and `odin test src/plugin` **4**, all passing; `./build.sh --offline` **50
 checks, all passing** (new: bypass-transition click detector, config count/layout/
 select/rescan, mono compression figure); `./build.sh --gui` **35 checks, all passing**.
+
+**GUI/hygiene batch. ✅ DONE.** The remaining review items, all in the GUI<->audio seam:
+
+- **The UI ring can no longer orphan a gesture.** Value pushes stop 8 slots short of
+  full, so `GESTURE_BEGIN`/`END` always have somewhere to go - a dropped END previously
+  left the host's automation gesture open forever. The full-queue test now locks the
+  policy in.
+- **Drag edits are coalesced at drain.** A run of values for one control collapses to
+  its newest member before being applied and echoed - one automation point per block
+  per control instead of one per mouse event, with no loss of feel. Covered by a new
+  plugin test that captures the echoed event stream.
+- **The mirror is only published on a successful push.** A dropped edit used to leave
+  the knob showing a value the DSP never applied until the next edit landed.
+- **The transfer curve no longer races the audio thread.** `bridge.curve` builds its
+  gain computer from the atomic parameter mirror (via a `make_curve` helper shared with
+  `sync_dsp`) instead of reading the band's computer mid-write.
+- **Double-click reset is scoped to knobs.** On buttons/toggles/selectors a second
+  click is just another press; previously it both advanced and reset the control.
+- **`set_scale` answers honestly.** The panel is fixed-size, so it returns false rather
+  than claiming success. Retina backing is unaffected - it is handled per frame from
+  the view's `backingScaleFactor`.
+- **The GL drawable follows the window.** A runtime `viewDidMoveToWindow` override
+  (forwarding to NSView's implementation via `class_getMethodImplementation`) plus a
+  per-frame backing-scale check in `render`, so moving between displays or displays of
+  different density can no longer leave a stale drawable.
+
+Also: the guicheck stub's transfer curve now calls the DSP's real gain computer instead
+of a re-derived copy, and a stray spaces-for-tabs indentation slipped in `input.odin`
+is fixed.
+
+Evaluated and deliberately left as-is: the `fonts_ok` gate still skips all controls when
+no system font loads (every draw call needs a font for labels; a half-labelled panel is
+not better than a bare chassis), and `smoother_is_settled` stays as a tested utility
+rather than becoming a micro-optimisation in the sample loop.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test src/dsp`
+**27** and `odin test src/plugin` **5** (new: drain coalescing), all passing;
+`./build.sh --offline` **50 checks, all passing**; `./build.sh --gui` **35 checks, all
+passing**.
 
 ## Feasibility notes
 

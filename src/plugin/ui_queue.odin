@@ -18,6 +18,11 @@ import clap "proj:clap-odin"
 
 UI_QUEUE_CAPACITY :: 512 // power of two, so the mask is a bitwise and
 
+// Value pushes stop this far short of full, so gesture events always have somewhere to
+// go even when a drag has flooded the ring. An orphaned GESTURE_END would leave the
+// host's automation gesture open forever.
+UI_QUEUE_GESTURE_RESERVE :: 8
+
 Ui_Event_Kind :: enum u8 {
 	Gesture_Begin,
 	Value,
@@ -41,8 +46,12 @@ ui_queue_push :: proc "contextless" (queue: ^Ui_Queue, event: Ui_Event) -> bool 
 	write := intrinsics.atomic_load_explicit(&queue.write, .Relaxed)
 	read := intrinsics.atomic_load_explicit(&queue.read, .Acquire)
 
-	if write - read >= UI_QUEUE_CAPACITY {
-		return false // full
+	limit: u32 = UI_QUEUE_CAPACITY
+	if event.kind == .Value {
+		limit -= UI_QUEUE_GESTURE_RESERVE
+	}
+	if write - read >= limit {
+		return false // full (for this kind of event)
 	}
 
 	queue.items[write & (UI_QUEUE_CAPACITY - 1)] = event
@@ -63,6 +72,21 @@ ui_queue_pop :: proc "contextless" (queue: ^Ui_Queue) -> (event: Ui_Event, ok: b
 	event = queue.items[read & (UI_QUEUE_CAPACITY - 1)]
 	intrinsics.atomic_store_explicit(&queue.read, read + 1, .Release)
 	return event, true
+}
+
+// [audio-thread]
+// Looks at the next event without consuming it, so the drain loop can coalesce a run of
+// edits to one control into the newest - the intermediate points of a drag are of no
+// interest to the DSP or to the host's automation lane. Safe because there is exactly
+// one consumer.
+ui_queue_peek :: proc "contextless" (queue: ^Ui_Queue) -> (event: Ui_Event, ok: bool) {
+	read := intrinsics.atomic_load_explicit(&queue.read, .Relaxed)
+	write := intrinsics.atomic_load_explicit(&queue.write, .Acquire)
+
+	if read == write {
+		return {}, false
+	}
+	return queue.items[read & (UI_QUEUE_CAPACITY - 1)], true
 }
 
 //

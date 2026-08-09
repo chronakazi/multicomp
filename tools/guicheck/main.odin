@@ -17,6 +17,7 @@ import stbi "vendor:stb/image"
 import nvg "vendor:nanovg"
 import nvg_gl "vendor:nanovg/gl"
 
+import "proj:src/dsp"
 import "proj:src/gui"
 
 W :: gui.WIDTH
@@ -543,19 +544,16 @@ stub_bridge :: proc() -> gui.Bridge {
 			}
 			return 0
 		},
-		curve = proc(user: rawptr, input_db: f64) -> f64 {
-			if stub_unity {
-				return input_db // 1:1, the plugin's default and the worst case for overlap
-			}
-			// A 4:1 curve at -18 with a 6 dB knee, so the window shows a real shape.
-			threshold, ratio, knee :: -18.0, 4.0, 6.0
-			over := input_db - threshold
-			if 2 * over < -knee {return input_db}
-			if 2 * abs(over) <= knee {
-				d := over + knee / 2
-				return input_db + (1 / ratio - 1) * d * d / (2 * knee)
-			}
-			return threshold + over / ratio
-		},
+	curve = proc(user: rawptr, input_db: f64) -> f64 {
+		if stub_unity {
+			return input_db // 1:1, the plugin's default and the worst case for overlap
+		}
+		// A 4:1 curve at -18 with a 6 dB knee, so the window shows a real shape. Use
+		// the DSP's own gain computer rather than a re-derived copy: if the curve ever
+		// changes, this stub cannot silently drift away from what the audio does.
+		computer: dsp.Gain_Computer
+		dsp.gain_computer_set(&computer, -18, 4, 6)
+		return dsp.gain_computer_output_db(computer, input_db)
+	},
 	}
 }

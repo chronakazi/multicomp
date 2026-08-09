@@ -157,7 +157,7 @@ MultiComp.clap/Contents/
 ```
 
 Validation is the gate — run it before claiming anything works. Current status:
-**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **4**
+**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **5**
 plugin tests, **50** offline audio checks and **35** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
@@ -324,7 +324,10 @@ predates it. Absence there is not evidence the flag is missing; check the raw
 - The GUI is **main-thread only**. Parameter edits must reach the DSP as events, never by
   the GUI writing shared state — they go through the SPSC ring in `plugin/ui_queue.odin`,
   get applied in `process`/`flush`, and are echoed on `out_events` so the host records
-  them. Always call `request_flush` after queueing, or edits stall on a stopped transport.
+  them. Value pushes stop short of full so gesture events always fit (a dropped
+  `GESTURE_END` leaves a host gesture open forever), and `drain_ui` coalesces a run of
+  edits to one control into its newest member. Always call `request_flush` after
+  queueing, or edits stall on a stopped transport.
 - Adding a parameter means adding it to **both** `PARAMS` and `gui.CONTROLS`; the ids in
   `gui/layout.odin` mirror `Param_Id`. `./build.sh --gui` asserts the counts match.
 - Meters must rise instantly and fall at a fixed rate **per second**, not per `process`
