@@ -9,6 +9,7 @@ package guicheck
 // checked objectively, with no window ever appearing on screen.
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 
 import gl "vendor:OpenGL"
@@ -247,9 +248,12 @@ main :: proc() {
 			differing += 1
 		}
 	}
+	// Threshold reflects what actually moves: the stub's readout text is fixed per
+	// parameter, so this counts pointer angles and lamp states alone. A static panel
+	// scores 0, which is the failure this guards against.
 	check(
 		"panel redraws when values change",
-		differing > 2000,
+		differing > 700,
 		fmt.tprintf("%d pixels differ", differing),
 	)
 	stub_offset = 0
@@ -399,6 +403,29 @@ main :: proc() {
 		fmt.println("       wrote build/panel.png")
 	}
 
+	// Presentation render: realistic settings and a moving history, written where the
+	// README can reference it. Regenerated on every --gui run, so it cannot go stale.
+	shot_mode = true
+	stub_offset = 0
+	stub_unity = false
+	ui.history = {}
+	for i in 0 ..< int(gui.HISTORY_W) {
+		gui.history_push(&ui)
+	}
+	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
+	nvg.BeginFrame(vg, W, H, 1)
+	gui.draw_panel(vg)
+	gui.draw_controls(&ui)
+	nvg.EndFrame(vg)
+	gl.ReadPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(pixels))
+	for y in 0 ..< H {
+		src := (H - 1 - y) * W * 4
+		copy(flipped[y * W * 4:][:W * 4], pixels[src:][:W * 4])
+	}
+	if stbi.write_png("design/panel.png", W, H, 4, raw_data(flipped), W * 4) != 0 {
+		fmt.println("       wrote design/panel.png")
+	}
+
 	gl.DeleteFramebuffers(1, &fbo)
 	gl.DeleteRenderbuffers(1, &colour)
 	gl.DeleteRenderbuffers(1, &depth_stencil)
@@ -438,10 +465,48 @@ main :: proc() {
 
 stub_offset := u32(0)
 stub_unity := false
+shot_mode := false
+shot_tick := 0
+
+// A plausible working setting, so the render is representative rather than arbitrary —
+// it doubles as the screenshot in the README. Values are normalised 0..1 across each
+// parameter's real range.
+Stub :: struct {
+	value:  f64,
+	text:   string,
+	choice: int,
+}
+
+STUB := [gui.PARAM_COUNT]Stub {
+	{0, "", 0}, // Bypass
+	{0.5, "0.0 dB", 0}, // Input Trim
+	{0.70, "-18.0 dB", 0}, // Threshold, -18 of -60..0
+	{0.158, "4.0 : 1", 0}, // Ratio, 4:1 of 1..20
+	{0.25, "6.0 dB", 0}, // Knee
+	{0.0997, "30.0 ms", 0}, // Attack
+	{0.0985, "300 ms", 0}, // Release
+	{0, "", 1}, // Auto Release, on
+	{0, "", 0}, // Detector, Peak
+	{0, "", 0}, // Topology, feed-forward
+	{1.0, "100 %", 0}, // Stereo Link
+	{0, "", 0}, // Channel, L/R
+	{0.2, "2.0 ms", 0}, // Lookahead
+	{0, "", 0}, // SC Source, internal
+	{0.125, "80 Hz", 0}, // SC High-Pass
+	{0, "", 0}, // SC Listen
+	{0.4167, "3.0 dB", 0}, // Makeup, +3 of -12..+24
+	{0, "", 0}, // Auto Makeup
+	{1.0, "100 %", 0}, // Mix
+	{0.5, "0.0 dB", 0}, // Output Trim
+}
 
 stub_value :: proc(param: u32) -> f64 {
-	// Spread the controls out so a stuck-at-zero bug is visible in the render.
-	return f64(((param + stub_offset) * 7) % 10) / 9
+	if int(param) >= len(STUB) {
+		return 0
+	}
+	v := STUB[param].value
+	// The redraw check flips every knob, which is the largest possible pixel change.
+	return stub_offset != 0 ? 1 - v : v
 }
 
 stub_bridge :: proc() -> gui.Bridge {
@@ -449,9 +514,11 @@ stub_bridge :: proc() -> gui.Bridge {
 		user = nil,
 		normalized = proc(user: rawptr, param: u32) -> f64 {return stub_value(param)},
 		text = proc(user: rawptr, param: u32, buffer: []u8) -> string {
-			return gui.format_db(buffer, stub_value(param) * 20 - 10)
+			return int(param) < len(STUB) ? STUB[param].text : ""
 		},
-		choice = proc(user: rawptr, param: u32) -> int {return int(param) % 2},
+		choice = proc(user: rawptr, param: u32) -> int {
+			return int(param) < len(STUB) ? STUB[param].choice : 0
+		},
 		choices = proc(user: rawptr, param: u32) -> int {return 2},
 		begin_edit = proc(user: rawptr, param: u32) {},
 		edit = proc(user: rawptr, param: u32, normalized: f64) {},
@@ -462,7 +529,15 @@ stub_bridge :: proc() -> gui.Bridge {
 			case .Input:
 				return -12
 			case .Gain_Reduction:
-				return 6.5
+				if !shot_mode {
+					return 6.5 // constant, so the pixel checks are deterministic
+				}
+				// A programme-like envelope for the screenshot, advanced once per call so
+				// filling the history draws a real trace rather than a flat line.
+				shot_tick += 1
+				t := f64(shot_tick)
+				gr := 6.0 + 3.2 * math.sin(t * 0.031) * math.sin(t * 0.0071) + 1.3 * math.sin(t * 0.21)
+				return max(0, gr)
 			case .Output:
 				return -9
 			}
