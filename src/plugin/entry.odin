@@ -3,6 +3,7 @@ package plugin
 import "base:runtime"
 
 import clap "proj:clap-odin"
+import "proj:src/dsp"
 
 PLUGIN_ID :: "com.foesoft.multicomp"
 PLUGIN_NAME :: "MultiComp"
@@ -56,6 +57,11 @@ factory := clap.Plugin_Factory {
 		self := new(Multicomp)
 		self.host = host
 		reset_to_defaults(self)
+
+		// The meter slots decode zero bits as 0 dBFS, so a freshly created plugin would
+		// otherwise show a phantom full-scale reading until audio decayed it away.
+		publish(&self.meter_in, dsp.SILENCE_DB)
+		publish(&self.meter_out, dsp.SILENCE_DB)
 
 		self.plugin = clap.Plugin {
 			desc             = &descriptor,

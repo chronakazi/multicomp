@@ -293,8 +293,37 @@ downward from the top, that the space below the trace stays clear, and that the 
 ladder renders.
 
 **Phase 8 — Polish.** Presets (`clap.preset-load`), `clap.remote-controls` for hardware
-surfaces, param modulation, GUI resize, and a proper `Info.plist` + code signing for
-distribution.
+surfaces, param modulation, GUI resize. (Code signing and packaging for distribution are
+deliberately deferred until the plugin has had time in real sessions.)
+
+**Post-review correctness batch. ✅ DONE.** A full code review found four latent defects
+the validator could never reach, all now fixed and locked in with new offline checks:
+
+- **Degraded ports** (`process_block`): a host may express a disconnected input as a
+  missing port array, a nil `data32`, or a zero-channel port. The first two previously
+  read out of bounds or left the output buffer untouched — and an untouched output
+  *repeats stale audio*. All degraded shapes now write silence, and output channels
+  beyond the input's are zeroed.
+- **Meters initialised to 0 dBFS**: the atomic meter slots decode zero bits as 0.0 dB,
+  so a fresh insert showed a phantom near-full-scale reading decaying at 20 dB/s for
+  half a minute. They are now published as `SILENCE_DB` at create and at activate.
+- **State load ignored the latency path**: loading a session whose lookahead disagreed
+  with the latched latency changed nothing and announced nothing. It now goes through
+  the same `latency.changed` + restart request as an edit, guarded by a new `activated`
+  flag so an inactive load stays silent (the value latches at the next `activate`).
+- **GUI edits echoed unclamped**: `drain_ui` sent the raw ring value to `out_events`
+  while applying the clamped one. The host now records what the DSP actually applied.
+
+Also from the review, a deliberate seam widening for the planned 3-band crossover
+version: `sync_dsp` and the GR meter now iterate `band_count` rather than touching
+`bands[0]` directly, so growing the slice cannot leave band 0 special-cased. The
+parameter table stays flat on purpose — per-band parameter pages get their own id
+scheme when they arrive, and the `(id, value)` state format already tolerates it.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test src/dsp`
+**27** and `odin test src/plugin` **4**, all passing; `./build.sh --offline` **42
+checks, all passing** (new: meters start at silence, three degraded-port shapes, state
+round trip with latency announcement); `./build.sh --gui` **34 checks, all passing**.
 
 ## Feasibility notes
 

@@ -27,8 +27,44 @@ get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 		return &gui_ext
 	case ext.EXT_TIMER_SUPPORT:
 		return &timer_ext
+	case EXT_METERS:
+		return &meters_ext
 	}
 	return nil
+}
+
+//
+// Meter readback. Not a CLAP extension - the GUI already reads these atomics through the
+// bridge - but an explicit, named interface so the offline tool can assert on metering
+// without knowing the plugin's struct layout. It deliberately returns the *published*
+// value: what is checked here is what the GUI would show.
+//
+
+EXT_METERS :: "com.foesoft.multicomp.meters"
+
+Meter_Kind :: enum i32 {
+	Input,
+	Gain_Reduction,
+	Output,
+}
+
+Plugin_Meters :: struct {
+	get: proc "c" (plugin: ^clap.Plugin, kind: i32) -> f64,
+}
+
+meters_ext := Plugin_Meters {
+	get = proc "c" (plugin: ^clap.Plugin, kind: i32) -> f64 {
+		self := from_plugin(plugin)
+		switch Meter_Kind(kind) {
+		case .Input:
+			return read_published(&self.meter_in)
+		case .Gain_Reduction:
+			return read_published(&self.meter_gr)
+		case .Output:
+			return read_published(&self.meter_out)
+		}
+		return 0
+	},
 }
 
 //

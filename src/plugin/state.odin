@@ -92,6 +92,14 @@ state_ext := ext.Plugin_State {
 			id := Param_Id(entry_id)
 			self.values[id] = clamp_param(id, value)
 		}
+
+		// A loaded lookahead only takes effect on the next activation, because latency
+		// is latched while active. If the value disagrees with the latched latency,
+		// announce it and ask for a restart - the same path an automation edit takes.
+		// Inactive plugins need nothing: activate latches the loaded value.
+		if self.activated && lookahead_samples(self) != self.latency_samples {
+			request_latency_update(self)
+		}
 		return true
 	},
 }

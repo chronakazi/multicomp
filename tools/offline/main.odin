@@ -4,10 +4,12 @@ package offline
 // measures what comes out. Verifies behaviour clap-validator does not check - whether the
 // compressor actually applies the gain reduction its own curve asks for.
 
+import "base:runtime"
 import "core:dynlib"
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:strings"
 
 import clap "proj:clap-odin"
 import ext "proj:clap-odin/ext"
@@ -18,13 +20,28 @@ CHANNELS :: 2
 // Parameters are looked up by name, so reordering Param_Id cannot silently invalidate
 // these checks.
 
+// Set when the plugin announces a latency change through clap.host latency.changed().
+// The state-load check below depends on it.
+latency_changed_count := 0
+
+host_latency_ext := ext.Host_Latency {
+	changed = proc "c" (host: ^clap.Host) {
+		latency_changed_count += 1
+	},
+}
+
 host := clap.Host {
 	clap_version = clap.CLAP_VERSION,
 	name = "offline",
 	vendor = "scratch",
 	url = "",
 	version = "0.1.0",
-	get_extension = proc "c" (host: ^clap.Host, id: cstring) -> rawptr {return nil},
+	get_extension = proc "c" (host: ^clap.Host, id: cstring) -> rawptr {
+		if string(id) == ext.EXT_LATENCY {
+			return &host_latency_ext
+		}
+		return nil
+	},
 	request_restart = proc "c" (host: ^clap.Host) {},
 	request_process = proc "c" (host: ^clap.Host) {},
 	request_callback = proc "c" (host: ^clap.Host) {},
@@ -75,6 +92,59 @@ sink := clap.Output_Events {
 }
 
 //
+// State streams
+//
+// In-memory clap.Istream/Ostream, so the state round trip can be exercised without
+// touching the filesystem.
+//
+
+// Copies a stream into a buffer in deliberately small chunks: hosts are allowed to
+// satisfy a write partially, and the plugin is required to loop.
+save_state :: proc(p: Plugin) -> (data: [dynamic]u8, ok: bool) {
+	ostream := clap.Ostream {
+		ctx = &data,
+		write = proc "c" (s: ^clap.Ostream, buffer: rawptr, size: u64) -> i64 {
+			// Called back on our own thread, so an Odin context is safe to install.
+			context = runtime.default_context()
+			target := cast(^[dynamic]u8)s.ctx
+			bytes := ([^]u8)(buffer)
+			n := min(int(size), 7) // partial on purpose
+			for i in 0 ..< n {
+				append(target, bytes[i])
+			}
+			return i64(n)
+		},
+	}
+	if !p.state.save(p.plugin, &ostream) {
+		return nil, false
+	}
+	return data, true
+}
+
+load_state :: proc(p: Plugin, data: []u8) -> bool {
+	Source :: struct {
+		data:   []u8,
+		cursor: int,
+	}
+	source := Source{data = data}
+	istream := clap.Istream {
+		ctx = &source,
+		read = proc "c" (s: ^clap.Istream, buffer: rawptr, size: u64) -> i64 {
+			source := (^Source)(s.ctx)
+			remaining := len(source.data) - source.cursor
+			if remaining <= 0 {
+				return 0
+			}
+			n := min(int(size), remaining, 5) // partial on purpose
+			copy(([^]u8)(buffer)[:n], source.data[source.cursor:source.cursor + n])
+			source.cursor += n
+			return i64(n)
+		},
+	}
+	return p.state.load(p.plugin, &istream)
+}
+
+//
 // Audio buffers
 //
 
@@ -111,6 +181,8 @@ Plugin :: struct {
 	params:  ^ext.Plugin_Params,
 	latency: ^ext.Plugin_Latency,
 	tail:    ^ext.Plugin_Tail,
+	state:   ^ext.Plugin_State,
+	meters:  ^Meter_Readback,
 }
 
 plugin_load :: proc(path: string) -> (p: Plugin, ok: bool) {
@@ -126,7 +198,9 @@ plugin_load :: proc(path: string) -> (p: Plugin, ok: bool) {
 	}
 
 	p.entry = (^clap.Plugin_Entry)(sym)
-	p.entry.init(cstring(raw_data(path)))
+	path_c := strings.clone_to_cstring(path)
+	defer delete(path_c)
+	p.entry.init(path_c)
 	p.factory = (^clap.Plugin_Factory)(p.entry.get_factory(clap.PLUGIN_FACTORY_ID))
 	desc := p.factory.get_plugin_descriptor(p.factory, 0)
 	p.plugin = p.factory.create_plugin(p.factory, &host, desc.id)
@@ -135,7 +209,32 @@ plugin_load :: proc(path: string) -> (p: Plugin, ok: bool) {
 	p.params = (^ext.Plugin_Params)(p.plugin.get_extension(p.plugin, ext.EXT_PARAMS))
 	p.latency = (^ext.Plugin_Latency)(p.plugin.get_extension(p.plugin, ext.EXT_LATENCY))
 	p.tail = (^ext.Plugin_Tail)(p.plugin.get_extension(p.plugin, ext.EXT_TAIL))
+	p.state = (^ext.Plugin_State)(p.plugin.get_extension(p.plugin, ext.EXT_STATE))
+	p.meters = (^Meter_Readback)(p.plugin.get_extension(p.plugin, METER_READBACK_ID))
 	return p, true
+}
+
+// The plugin's meter readback interface: how the atomics the GUI displays are checked
+// from here. Keeping it a named interface means the tool needs no knowledge of the
+// plugin's struct layout, which is free to change.
+METER_READBACK_ID :: "com.foesoft.multicomp.meters"
+
+Meter_Kind :: enum i32 {
+	Input           = 0,
+	Gain_Reduction  = 1,
+	Output          = 2,
+}
+
+Meter_Readback :: struct {
+	get: proc "c" (plugin: ^clap.Plugin, kind: i32) -> f64,
+}
+
+measure_meter :: proc(p: Plugin, kind: Meter_Kind) -> f64 {
+	if p.meters == nil || p.meters.get == nil {
+		fmt.eprintln("plugin does not expose the meter readback interface")
+		os.exit(1)
+	}
+	return p.meters.get(p.plugin, i32(kind))
 }
 
 // Resolves a parameter id from its display name. Exits rather than silently testing the
@@ -313,6 +412,63 @@ measure_impulse_delay :: proc(p: Plugin, block: int = 512) -> int {
 	return found
 }
 
+// Ways a host can hand us a broken input port.
+Degradation :: enum {
+	No_Inputs, // audio_inputs_count = 0
+	Nil_Input, // port present, data32 nil
+	Zero_Channels, // port present, channel_count 0
+}
+
+// Drives a block of loud audio through with the input port missing or broken, and
+// returns the peak output. Anything but silence - or a crash - is a failure.
+run_degraded :: proc(p: Plugin, mode: Degradation, block: int = 512) -> f64 {
+	input := buffers_make(block)
+	output := buffers_make(block)
+	for c in 0 ..< CHANNELS {
+		for i in 0 ..< block {
+			input.data[c][i] = 1 // loud, so a stale read is unmistakable
+			output.data[c][i] = 0.5 // pre-filled, so "didn't write" is unmistakable
+		}
+	}
+	broken := input.buffer
+	switch mode {
+	case .No_Inputs:
+	// handled below, at the process struct
+	case .Nil_Input:
+		broken.data32 = nil
+	case .Zero_Channels:
+		broken.channel_count = 0
+	}
+
+	empty: Event_List
+	event_list_init(&empty)
+	defer delete(empty.items)
+
+	process := clap.Process {
+		steady_time         = 0,
+		frames_count        = u32(block),
+		transport           = nil,
+		audio_inputs        = &broken,
+		audio_outputs       = &output.buffer,
+		audio_inputs_count  = mode == .No_Inputs ? 0 : 1,
+		audio_outputs_count = 1,
+		in_events           = &empty.vtable,
+		out_events          = &sink,
+	}
+
+	p.plugin.start_processing(p.plugin)
+	p.plugin.process(p.plugin, &process)
+	p.plugin.stop_processing(p.plugin)
+
+	peak := 0.0
+	for c in 0 ..< CHANNELS {
+		for i in 0 ..< block {
+			peak = max(peak, f64(abs(output.data[c][i])))
+		}
+	}
+	return db(peak)
+}
+
 failures := 0
 
 check :: proc(name: string, actual, expected, tolerance: f64, unit := "dB") {
@@ -351,8 +507,17 @@ main :: proc() {
 	// Inserting the plugin and touching nothing must not change the signal at all. This is
 	// a regression guard: an earlier build defaulted to 4:1 at -18 dB and pulled 9 dB off
 	// typical program material the moment it was inserted.
-	fmt.println("factory defaults are transparent")
 	p.plugin.activate(p.plugin, SR, 1, 512)
+
+	// Read before any audio has run: activation must leave the meters at silence, not
+	// at the 0 dBFS that zero-initialised atomics would decode as.
+	fmt.println("meters")
+	check("input meter starts at silence, not 0 dBFS", measure_meter(p, .Input), -120, 0.5)
+	check("output meter starts at silence", measure_meter(p, .Output), -120, 0.5)
+	check("gain reduction meter starts at zero", measure_meter(p, .Gain_Reduction), 0, 0.001)
+
+	fmt.println()
+	fmt.println("factory defaults are transparent")
 	for level in ([?]f64{-30, -18, -12, -6, -3}) {
 		out := db(run_sine(p, from_db(level), 1000, 0.5))
 		check(fmt.tprintf("untouched at %.0f dBFS in", level), out, level, 0.01)
@@ -530,9 +695,45 @@ main :: proc() {
 	check("latency at 0 ms lookahead", f64(p.latency.get(p.plugin)), 0, 0, "smp")
 	check("impulse delay at 0 ms", f64(measure_impulse_delay(p)), 0, 0, "smp")
 
-	// Latency is latched at activate, so lookahead needs a reactivation to take effect.
+	fmt.println()
+	fmt.println("port robustness")
+	// Hosts may express a disconnected port as a nil buffer, a zero channel count, or
+	// a short port array. None of these may crash, and all must leave silence behind -
+	// an untouched output buffer would repeat whatever it last held.
+	check("no input ports at all writes silence", run_degraded(p, .No_Inputs), -200, 0, "dB")
+	check("nil input buffer writes silence", run_degraded(p, .Nil_Input), -200, 0, "dB")
+	check("zero-channel input writes silence", run_degraded(p, .Zero_Channels), -200, 0, "dB")
+
+	fmt.println()
+	fmt.println("state")
+	// A state round trip must preserve the values, and a lookahead loaded while active
+	// must announce the latency change - it cannot take effect until reactivation.
+	threshold_id := param_id(p, "Threshold")
+	lookahead_id := param_id(p, "Lookahead")
+	set_params(p, []Setting{{"Threshold", -20}, {"Ratio", 4}, {"Lookahead", 5}})
+	saved, saved_ok := save_state(p)
+	check("state saves", saved_ok ? 1 : 0, 1, 0, "")
+
+	// Move everything the snapshot holds, so the load has something to restore.
+	set_params(p, []Setting{{"Threshold", -33}, {"Ratio", 7.5}, {"Lookahead", 0}})
+	latency_changed_count = 0
+	check("state loads", load_state(p, saved[:]) ? 1 : 0, 1, 0, "")
+	// The load asks the host for a main-thread callback; answer it, the way a host would.
+	p.plugin.on_main_thread(p.plugin)
+
+	restored := 0.0
+	p.params.get_value(p.plugin, threshold_id, &restored)
+	check("threshold restored from state", restored, -20, 0.001, "dB")
+	p.params.get_value(p.plugin, lookahead_id, &restored)
+	check("lookahead restored from state", restored, 5, 0.001, "ms")
+	check("latency change announced on load", f64(latency_changed_count), 1, 0, "")
+	// CLAP requires the reported latency to stay latched until reactivation, even
+	// though the parameter now says otherwise.
+	check("reported latency stays latched while active", f64(p.latency.get(p.plugin)), 0, 0, "smp")
+	delete(saved)
+
+	// The latched-out value takes effect on the next activation.
 	p.plugin.deactivate(p.plugin)
-	set_params(p, []Setting{{"Lookahead", 5}})
 	p.plugin.activate(p.plugin, SR, 1, 512)
 
 	expected_latency := math.round(f64(5.0 / 1000 * SR))

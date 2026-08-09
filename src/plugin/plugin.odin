@@ -37,6 +37,7 @@ Multicomp :: struct {
 	host:              ^clap.Host,
 	host_latency:      ^ext.Host_Latency,
 	sample_rate:       f64,
+	activated:         bool,
 
 	// Current value of every parameter, indexed by Param_Id.
 	values:            [Param_Id]f64,
@@ -121,14 +122,17 @@ drain_ui :: proc "contextless" (self: ^Multicomp, out_events: ^clap.Output_Event
 
 		switch event.kind {
 		case .Value:
+			value := event.value
 			if is_valid_param(event.param) {
 				id := Param_Id(event.param)
-				self.values[id] = clamp_param(id, event.value)
+				value = clamp_param(id, event.value)
+				self.values[id] = value
 				if id == .Lookahead {
 					request_latency_update(self)
 				}
 			}
-			push_param_value(out_events, event.param, event.value)
+			// Echo the value actually applied, so the host records what the DSP did.
+			push_param_value(out_events, event.param, value)
 
 		case .Gesture_Begin:
 			push_gesture(out_events, event.param, .PARAM_GESTURE_BEGIN)
@@ -244,6 +248,12 @@ activate :: proc "c" (plugin: ^clap.Plugin, sample_rate: f64, min_frames, max_fr
 	self.latency_samples = lookahead_samples(self)
 	intrinsics.atomic_store_explicit(&self.latency_dirty, false, .Relaxed)
 
+	// Meters are plain atomics that persist across activations; start each one from
+	// silence rather than from whatever the last session (or zero initialisation) left.
+	publish(&self.meter_in, dsp.SILENCE_DB)
+	publish(&self.meter_out, dsp.SILENCE_DB)
+	publish(&self.meter_gr, 0)
+
 	self.band_count = 1
 	for index in 0 ..< self.band_count {
 		dsp.band_init(&self.bands[index], sample_rate, MAX_CHANNELS)
@@ -260,12 +270,14 @@ activate :: proc "c" (plugin: ^clap.Plugin, sample_rate: f64, min_frames, max_fr
 	}
 
 	reset(plugin)
+	self.activated = true
 	return true
 }
 
 deactivate :: proc "c" (plugin: ^clap.Plugin) {
 	context = runtime.default_context()
 	self := from_plugin(plugin)
+	self.activated = false
 	delete(self.lookahead_storage)
 	self.lookahead_storage = nil
 }
@@ -308,26 +320,35 @@ gain_target :: proc "contextless" (self: ^Multicomp, stage: Gain_Stage) -> f64 {
 
 // Pushes parameter values into the DSP. Called at every event boundary, so a change lands
 // on exactly the sample the host asked for.
+//
+// Today every band shares one global parameter set, so the same values are pushed to all
+// of them. When bands gain their own parameter pages this becomes a per-band lookup; the
+// loop and the coefficient caching below stay as they are.
 sync_dsp :: proc "contextless" (self: ^Multicomp) {
-	band := &self.bands[0]
-
 	threshold := self.values[.Threshold]
 	knee := self.values[.Knee]
 	ratio := self.values[.Ratio]
-	if ratio >= RATIO_MAX {
-		dsp.gain_computer_set_limiting(&band.computer, threshold, knee)
-	} else {
-		dsp.gain_computer_set(&band.computer, threshold, ratio, knee)
+	topology := dsp.Topology_Mode(int(self.values[.Topology]))
+	stereo_link := self.values[.Stereo_Link] * 0.01
+
+	for index in 0 ..< self.band_count {
+		band := &self.bands[index]
+		if ratio >= RATIO_MAX {
+			dsp.gain_computer_set_limiting(&band.computer, threshold, knee)
+		} else {
+			dsp.gain_computer_set(&band.computer, threshold, ratio, knee)
+		}
+		band.topology = topology
+		band.stereo_link = stereo_link
 	}
 
 	// Auto makeup restores half of what the curve would take off a full-scale signal.
 	// Half rather than all: full compensation reliably overshoots, because real material
 	// does not sit at 0 dBFS. At 1:1 this is 0, so the default stays transparent.
-	self.auto_makeup_db = 0.5 * dsp.gain_computer_reduction_db(band.computer, 0)
+	// Bands share the curve today, so band 0's computer is the reference.
+	self.auto_makeup_db = 0.5 * dsp.gain_computer_reduction_db(self.bands[0].computer, 0)
 
 	band_set_detector(self, dsp.Detector_Mode(int(self.values[.Detector])))
-	band.topology = dsp.Topology_Mode(int(self.values[.Topology]))
-	band.stereo_link = self.values[.Stereo_Link] * 0.01
 
 	// Coefficient updates involve exp() and trig, so only redo them when their inputs
 	// actually moved. Automation can otherwise land an event on every sample.
@@ -340,7 +361,9 @@ sync_dsp :: proc "contextless" (self: ^Multicomp) {
 	   self.cached.attack != attack ||
 	   self.cached.release != release ||
 	   self.cached.auto_release != auto_release {
-		dsp.band_set_times(band, attack, release, self.sample_rate, auto_release >= 0.5)
+		for index in 0 ..< self.band_count {
+			dsp.band_set_times(&self.bands[index], attack, release, self.sample_rate, auto_release >= 0.5)
+		}
 		self.cached.attack = attack
 		self.cached.release = release
 		self.cached.auto_release = auto_release
@@ -395,6 +418,10 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 	for frame < process.frames_count {
 		for next_event < event_count {
 			header := process.in_events.get(process.in_events, next_event)
+			if header == nil {
+				next_event += 1 // a sloppy host handed us a hole; skip it
+				continue
+			}
 			if header.time > frame {
 				break
 			}
@@ -405,8 +432,10 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 
 		block_end := process.frames_count
 		if next_event < event_count {
-			header := process.in_events.get(process.in_events, next_event)
-			block_end = min(header.time, process.frames_count)
+			// nil here just means the rest of the list is unusable; run to the end.
+			if header := process.in_events.get(process.in_events, next_event); header != nil {
+				block_end = min(header.time, process.frames_count)
+			}
 		}
 
 		block_in, block_out := process_block(self, process, frame, block_end)
@@ -432,8 +461,12 @@ GR_FALL_DB_PER_SEC :: 36.0
 publish_meters :: proc "contextless" (self: ^Multicomp, peak_in, peak_out, frames: f64) {
 	seconds := self.sample_rate > 0 ? frames / self.sample_rate : 0
 
-	// Gain reduction falls back toward 0, so its floor is 0 rather than silence.
-	gr := -self.bands[0].channels[0].last_gain_db
+	// Gain reduction falls back toward 0, so its floor is 0 rather than silence. With
+	// one band that is the band's own figure; summed across bands once there are more.
+	gr := 0.0
+	for index in 0 ..< self.band_count {
+		gr -= self.bands[index].channels[0].last_gain_db
+	}
 	decay_toward(&self.meter_gr, gr, GR_FALL_DB_PER_SEC * seconds, 0)
 
 	fall := METER_FALL_DB_PER_SEC * seconds
@@ -455,13 +488,33 @@ process_block :: proc "contextless" (
 	process: ^clap.Process,
 	start, end: u32,
 ) -> (peak_in: f64, peak_out: f64) {
-	input := &process.audio_inputs[0]
+	// Defensive port handling. CLAP lets a host leave a port disconnected, and some
+	// express that by shrinking the port count rather than by nulling the buffer —
+	// so the array may be shorter than the port table, or missing entirely.
+	if process.audio_outputs == nil || process.audio_outputs_count == 0 {
+		return 0, 0
+	}
 	output := &process.audio_outputs[0]
-	if input.data32 == nil || output.data32 == nil {
+	if output.data32 == nil || output.channel_count == 0 {
+		return 0, 0
+	}
+	out_channels := min(int(output.channel_count), MAX_CHANNELS)
+
+	input: ^clap.Audio_Buffer
+	if process.audio_inputs != nil && process.audio_inputs_count > 0 {
+		candidate := &process.audio_inputs[0]
+		if candidate.data32 != nil && candidate.channel_count > 0 {
+			input = candidate
+		}
+	}
+	if input == nil {
+		// No usable input. The output must still be written - leaving it alone would
+		// repeat whatever the buffer last held.
+		write_silence(output, out_channels, start, end)
 		return 0, 0
 	}
 
-	channels := min(int(input.channel_count), int(output.channel_count), MAX_CHANNELS)
+	channels := min(int(input.channel_count), out_channels)
 	band := &self.bands[0]
 
 	bypassed := self.values[.Bypass] >= 0.5
@@ -561,7 +614,25 @@ process_block :: proc "contextless" (
 		}
 	}
 
+	// Channels the input didn't cover (a mono input on our stereo port, say) must not
+	// pass stale buffer content through.
+	write_silence(output, out_channels, start, end, skip = channels)
+
 	return
+}
+
+@(private = "file")
+write_silence :: proc "contextless" (
+	output: ^clap.Audio_Buffer,
+	channels: int,
+	start, end: u32,
+	skip := 0,
+) {
+	for channel in skip ..< channels {
+		for i in start ..< end {
+			output.data32[channel][i] = 0
+		}
+	}
 }
 
 handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header) {

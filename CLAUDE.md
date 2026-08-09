@@ -30,7 +30,6 @@ multicomp/
   CLAUDE.md          this file
   PLAN.md            implementation roadmap and status
   build.sh           build, bundle, validate, install
-  main.odin          vestigial empty placeholder — unused, safe to delete
   build/             output (gitignored)
   src/
     plugin/          package plugin — built as the dylib
@@ -126,7 +125,10 @@ Build, bundle, validate and install all go through `build.sh`:
 `--offline` runs [tools/offline](tools/offline) — a small offline CLAP host that loads the
 built plugin, pushes real audio through it and measures the result. It checks things the
 validator does not: that the gain reduction matches the static curve at known settings,
-that bypass is transparent, and that the impulse delay equals the reported latency. Use it
+that bypass is transparent, that the impulse delay equals the reported latency, that
+degraded input ports (missing, nil, zero-channel) produce silence rather than stale audio,
+that meters start at silence, and that a state round trip restores values and announces a
+latency change when a loaded lookahead disagrees with the latched one. Use it
 whenever DSP behaviour changes. It resolves parameters **by name**, so reordering
 `Param_Id` cannot silently invalidate the checks.
 
@@ -156,7 +158,7 @@ MultiComp.clap/Contents/
 
 Validation is the gate — run it before claiming anything works. Current status:
 **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **4**
-plugin tests, **33** offline audio checks and **25** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
+plugin tests, **42** offline audio checks and **34** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
@@ -306,7 +308,11 @@ predates it. Absence there is not evidence the flag is missing; check the raw
   before any change is called done. Report the actual counts.
 - Latency must stay constant while active — CLAP requires it. Anything that changes latency
   latches at `activate` and asks the host for a restart from `on_main_thread`; it must not
-  be automatable.
+  be automatable. A state load that changes lookahead goes through the same announce path
+  (guarded by `self.activated`), not a silent swap.
+- `process` must survive degraded ports — a missing input array, a nil `data32`, or a
+  zero-channel port all produce silence, and output channels beyond the input's are
+  zeroed. An untouched output buffer repeats stale audio, which reads as a hang.
 - No allocation, locks, file or console I/O in `process()` or below. `src/dsp/` is
   `proc "contextless"` throughout, which makes this a compile error rather than a dropout.
 - DSP in `src/dsp/` stays free of CLAP types so it can be tested with `odin test`. If a
