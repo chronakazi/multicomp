@@ -18,14 +18,18 @@ MAX_BANDS :: 4
 MAX_CHANNELS :: 2
 MAX_LOOKAHEAD_MS :: 10.0
 
-// Gain stages that sit outside the compressor's own envelope and so need their own
-// smoothing. Threshold, ratio and knee deliberately do not: a change to the curve reaches
-// the output through the envelope follower, which is already smoothing at the attack and
-// release times the user asked for.
+// Everything the user controls that reaches the output without passing through the
+// compressor's envelope gets its own smoother, so automation and knob moves ramp instead
+// of stepping: the gain trims, makeup (with auto makeup folded in), and the two
+// crossfades - bypass and parallel mix. Threshold, ratio and knee deliberately have no
+// smoother: a change to the curve reaches the output through the envelope follower,
+// which is already smoothing at the attack and release times the user asked for.
 Gain_Stage :: enum {
 	Input_Trim,
 	Makeup,
 	Output_Trim,
+	Bypass,
+	Mix,
 }
 
 GAIN_SMOOTHING_MS :: 20.0
@@ -61,8 +65,11 @@ Multicomp :: struct {
 
 	// Derived values recomputed only when their inputs change, so a heavily automated
 	// block does not pay for exp() and trig on every event boundary.
-	auto_makeup_db:    f64,
 	cached:            Derived_Config,
+
+	// Selected port layout (stereo or mono main ports), from clap.audio-ports-config.
+	// The host may only select while the plugin is deactivated.
+	port_config:       Port_Config,
 
 	// GUI. Main-thread only, and entirely optional: the plugin processes audio whether or
 	// not a window has ever been opened.
@@ -306,14 +313,43 @@ reset :: proc "c" (plugin: ^clap.Plugin) {
 	sync_dsp(self)
 }
 
+// The static curve as configured by the current parameter values. Shared by sync_dsp
+// and the auto-makeup target, so what is displayed, applied and compensated for can
+// never disagree.
+curve_from_values :: proc "contextless" (self: ^Multicomp) -> dsp.Gain_Computer {
+	computer: dsp.Gain_Computer
+	ratio := self.values[.Ratio]
+	if ratio >= RATIO_MAX {
+		dsp.gain_computer_set_limiting(&computer, self.values[.Threshold], self.values[.Knee])
+	} else {
+		dsp.gain_computer_set(&computer, self.values[.Threshold], ratio, self.values[.Knee])
+	}
+	return computer
+}
+
 gain_target :: proc "contextless" (self: ^Multicomp, stage: Gain_Stage) -> f64 {
 	switch stage {
 	case .Input_Trim:
 		return self.values[.Input_Trim]
 	case .Makeup:
-		return self.values[.Makeup]
+		// Auto makeup restores half of what the curve would take off a full-scale
+		// signal. Half rather than all: full compensation reliably overshoots, because
+		// real material does not sit at 0 dBFS. At 1:1 this is 0, so the default stays
+		// transparent. It is folded into the smoother target rather than added after
+		// the smoother, so automating the curve with auto makeup on ramps the
+		// compensation instead of stepping it.
+		makeup := self.values[.Makeup]
+		if self.values[.Auto_Makeup] >= 0.5 {
+			computer := curve_from_values(self)
+			makeup += 0.5 * dsp.gain_computer_reduction_db(computer, 0)
+		}
+		return makeup
 	case .Output_Trim:
 		return self.values[.Output_Trim]
+	case .Bypass:
+		return self.values[.Bypass] >= 0.5 ? 1 : 0
+	case .Mix:
+		return clamp(self.values[.Mix] * 0.01, 0, 1)
 	}
 	return 0
 }
@@ -325,28 +361,16 @@ gain_target :: proc "contextless" (self: ^Multicomp, stage: Gain_Stage) -> f64 {
 // of them. When bands gain their own parameter pages this becomes a per-band lookup; the
 // loop and the coefficient caching below stay as they are.
 sync_dsp :: proc "contextless" (self: ^Multicomp) {
-	threshold := self.values[.Threshold]
-	knee := self.values[.Knee]
-	ratio := self.values[.Ratio]
 	topology := dsp.Topology_Mode(int(self.values[.Topology]))
 	stereo_link := self.values[.Stereo_Link] * 0.01
 
+	curve := curve_from_values(self)
 	for index in 0 ..< self.band_count {
 		band := &self.bands[index]
-		if ratio >= RATIO_MAX {
-			dsp.gain_computer_set_limiting(&band.computer, threshold, knee)
-		} else {
-			dsp.gain_computer_set(&band.computer, threshold, ratio, knee)
-		}
+		band.computer = curve
 		band.topology = topology
 		band.stereo_link = stereo_link
 	}
-
-	// Auto makeup restores half of what the curve would take off a full-scale signal.
-	// Half rather than all: full compensation reliably overshoots, because real material
-	// does not sit at 0 dBFS. At 1:1 this is 0, so the default stays transparent.
-	// Bands share the curve today, so band 0's computer is the reference.
-	self.auto_makeup_db = 0.5 * dsp.gain_computer_reduction_db(self.bands[0].computer, 0)
 
 	band_set_detector(self, dsp.Detector_Mode(int(self.values[.Detector])))
 
@@ -411,7 +435,7 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 	event_count := process.in_events.size(process.in_events)
 	next_event: u32 = 0
 	frame: u32 = 0
-	peak_in, peak_out := 0.0, 0.0
+	peak_in, peak_out, gr_peak := 0.0, 0.0, 0.0
 
 	// Split the block at every event boundary so parameter changes land on the exact
 	// sample the host asked for, rather than all at once at the start of the block.
@@ -438,13 +462,14 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 			}
 		}
 
-		block_in, block_out := process_block(self, process, frame, block_end)
+		block_in, block_out, block_gr := process_block(self, process, frame, block_end)
 		peak_in = max(peak_in, block_in)
 		peak_out = max(peak_out, block_out)
+		gr_peak = max(gr_peak, block_gr)
 		frame = block_end
 	}
 
-	publish_meters(self, peak_in, peak_out, f64(process.frames_count))
+	publish_meters(self, peak_in, peak_out, gr_peak, f64(process.frames_count))
 	publish_values(self)
 	return .CONTINUE
 }
@@ -458,15 +483,12 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 METER_FALL_DB_PER_SEC :: 20.0
 GR_FALL_DB_PER_SEC :: 36.0
 
-publish_meters :: proc "contextless" (self: ^Multicomp, peak_in, peak_out, frames: f64) {
+publish_meters :: proc "contextless" (self: ^Multicomp, peak_in, peak_out, gr, frames: f64) {
 	seconds := self.sample_rate > 0 ? frames / self.sample_rate : 0
 
-	// Gain reduction falls back toward 0, so its floor is 0 rather than silence. With
-	// one band that is the band's own figure; summed across bands once there are more.
-	gr := 0.0
-	for index in 0 ..< self.band_count {
-		gr -= self.bands[index].channels[0].last_gain_db
-	}
+	// gr is the deepest reduction applied anywhere in the block. Reading only the final
+	// sample's gain would miss a transient that attacked and recovered inside one large
+	// buffer. The GR meter falls back toward 0, so its floor is 0 rather than silence.
 	decay_toward(&self.meter_gr, gr, GR_FALL_DB_PER_SEC * seconds, 0)
 
 	fall := METER_FALL_DB_PER_SEC * seconds
@@ -480,23 +502,24 @@ decay_toward :: proc "contextless" (slot: ^u64, value, fall, floor: f64) {
 	publish(slot, max(value, max(previous - fall, floor)))
 }
 
-// Returns the peak input and output magnitudes over the block, for metering. The input
-// figure is taken after the trim, because that is the level the threshold is compared
-// against — and therefore the x axis of the transfer window.
+// Returns the peak input and output magnitudes over the block plus the deepest gain
+// reduction applied, for metering. The input figure is taken after the trim, because
+// that is the level the threshold is compared against — and therefore the x axis of the
+// transfer window.
 process_block :: proc "contextless" (
 	self: ^Multicomp,
 	process: ^clap.Process,
 	start, end: u32,
-) -> (peak_in: f64, peak_out: f64) {
+) -> (peak_in: f64, peak_out: f64, gr_peak: f64) {
 	// Defensive port handling. CLAP lets a host leave a port disconnected, and some
 	// express that by shrinking the port count rather than by nulling the buffer —
 	// so the array may be shorter than the port table, or missing entirely.
 	if process.audio_outputs == nil || process.audio_outputs_count == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	output := &process.audio_outputs[0]
 	if output.data32 == nil || output.channel_count == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	out_channels := min(int(output.channel_count), MAX_CHANNELS)
 
@@ -511,18 +534,14 @@ process_block :: proc "contextless" (
 		// No usable input. The output must still be written - leaving it alone would
 		// repeat whatever the buffer last held.
 		write_silence(output, out_channels, start, end)
-		return 0, 0
+		return 0, 0, 0
 	}
 
 	channels := min(int(input.channel_count), out_channels)
 	band := &self.bands[0]
 
-	bypassed := self.values[.Bypass] >= 0.5
 	mid_side := int(self.values[.Channel_Mode]) == int(Channel_Mode_Value.Mid_Side)
 	listening := self.values[.Sidechain_Listen] >= 0.5
-	mix := clamp(self.values[.Mix] * 0.01, 0, 1)
-
-	auto_makeup := self.values[.Auto_Makeup] >= 0.5 ? self.auto_makeup_db : 0
 
 	// Fall back to the main input when the host has not connected a sidechain, so
 	// selecting External never silently mutes the detector.
@@ -537,10 +556,13 @@ process_block :: proc "contextless" (
 	source_channels := int(detector_source.channel_count)
 
 	for i in start ..< end {
-		// Gain stages advance every sample so a knob move never steps the output.
+		// Gain stages and crossfades advance every sample so a knob move, a bypass
+		// toggle or an automation step ramps instead of clicking.
 		input_trim := dsp.db_to_linear(dsp.smoother_tick(&self.gains[.Input_Trim]))
-		makeup_db := dsp.smoother_tick(&self.gains[.Makeup]) + auto_makeup
+		makeup_db := dsp.smoother_tick(&self.gains[.Makeup])
 		output_trim := dsp.db_to_linear(dsp.smoother_tick(&self.gains[.Output_Trim]))
+		bypass := dsp.smoother_tick(&self.gains[.Bypass])
+		mix := dsp.smoother_tick(&self.gains[.Mix])
 
 		// --- detector path -------------------------------------------------------
 		detector: [MAX_CHANNELS]f64
@@ -560,6 +582,9 @@ process_block :: proc "contextless" (
 
 		gains_db: [MAX_CHANNELS]f64
 		dsp.band_tick(band, detector[:channels], gains_db[:channels])
+		for channel in 0 ..< channels {
+			gr_peak = max(gr_peak, -gains_db[channel])
+		}
 
 		// --- signal path ---------------------------------------------------------
 		// The delay line holds the untouched input, so bypass can pass it straight
@@ -571,7 +596,9 @@ process_block :: proc "contextless" (
 			dry[channel] = dsp.delay_line_tick(&self.lookahead[channel], raw)
 		}
 
-		if bypassed {
+		// Fully bypassed: pass the delayed input exactly, and skip the wet path. The
+		// detector and envelope above keep running, so unbypassing starts warm.
+		if bypass >= 1 {
 			for channel in 0 ..< channels {
 				output.data32[channel][i] = f32(dry[channel])
 				peak_out = max(peak_out, abs(dry[channel]))
@@ -579,38 +606,46 @@ process_block :: proc "contextless" (
 			continue
 		}
 
-		// Auditioning the detector: hear exactly what the compressor is reacting to.
+		processed: [MAX_CHANNELS]f64
 		if listening {
+			// Auditioning the detector: hear exactly what the compressor reacts to.
 			for channel in 0 ..< channels {
-				value := detector[channel] * output_trim
-				output.data32[channel][i] = f32(value)
-				peak_out = max(peak_out, abs(value))
+				processed[channel] = detector[channel] * output_trim
 			}
-			continue
+		} else {
+			wet: [MAX_CHANNELS]f64
+			for channel in 0 ..< channels {
+				wet[channel] = dry[channel] * input_trim
+			}
+			if mid_side && channels >= 2 {
+				wet[0], wet[1] = dsp.encode_mid_side(wet[0], wet[1])
+			}
+			for channel in 0 ..< channels {
+				wet[channel] *= dsp.db_to_linear(gains_db[channel] + makeup_db)
+			}
+			if mid_side && channels >= 2 {
+				wet[0], wet[1] = dsp.decode_mid_side(wet[0], wet[1])
+			}
+
+			// Parallel compression. Both paths come off the same delay line, so the
+			// dry signal is already latency-aligned with the wet one - blending them
+			// cannot produce the comb filtering an uncompensated dry path would.
+			for channel in 0 ..< channels {
+				trimmed := dry[channel] * input_trim
+				processed[channel] = (trimmed + (wet[channel] - trimmed) * mix) * output_trim
+			}
 		}
 
+		// Bypass is a crossfade, not a switch: an instantaneous jump between two
+		// different gains is a waveform discontinuity, audible as a click. The fade
+		// target is the untrimmed delayed input - bypassed means untouched.
 		for channel in 0 ..< channels {
-			dry[channel] *= input_trim
-		}
-
-		wet := dry
-		if mid_side && channels >= 2 {
-			wet[0], wet[1] = dsp.encode_mid_side(wet[0], wet[1])
-		}
-		for channel in 0 ..< channels {
-			wet[channel] *= dsp.db_to_linear(gains_db[channel] + makeup_db)
-		}
-		if mid_side && channels >= 2 {
-			wet[0], wet[1] = dsp.decode_mid_side(wet[0], wet[1])
-		}
-
-		// Parallel compression. Both paths come off the same delay line, so the dry
-		// signal is already latency-aligned with the wet one - blending them cannot
-		// produce the comb filtering that an uncompensated dry path would.
-		for channel in 0 ..< channels {
-			blended := (dry[channel] + (wet[channel] - dry[channel]) * mix) * output_trim
-			output.data32[channel][i] = f32(blended)
-			peak_out = max(peak_out, abs(blended))
+			value := processed[channel]
+			if bypass > 0 {
+				value += (dry[channel] - value) * bypass
+			}
+			output.data32[channel][i] = f32(value)
+			peak_out = max(peak_out, abs(value))
 		}
 	}
 

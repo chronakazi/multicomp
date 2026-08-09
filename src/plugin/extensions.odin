@@ -27,6 +27,8 @@ get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 		return &gui_ext
 	case ext.EXT_TIMER_SUPPORT:
 		return &timer_ext
+	case ext.EXT_AUDIO_PORTS_CONFIG:
+		return &audio_ports_config_ext
 	case EXT_METERS:
 		return &meters_ext
 	}
@@ -68,7 +70,8 @@ meters_ext := Plugin_Meters {
 }
 
 //
-// clap.audio-ports — two stereo inputs (main + sidechain), one stereo output.
+// clap.audio-ports — two inputs (main + sidechain), one output. Main in/out are stereo
+// by default and mono under the mono port configuration; the sidechain is always stereo.
 //
 // The sidechain is an ordinary extra input port: CLAP has no dedicated sidechain flag, so
 // it is identified by not carrying IS_MAIN. Hosts leave it disconnected unless the user
@@ -76,6 +79,14 @@ meters_ext := Plugin_Meters {
 //
 
 SIDECHAIN_PORT :: 1
+
+// The selectable port layouts, from clap.audio-ports-config. "Stereo" is the default;
+// "Mono" narrows the main ports to one channel so the plugin drops cleanly onto a mono
+// track. The sidechain input stays stereo in both.
+Port_Config :: enum u32 {
+	Stereo,
+	Mono,
+}
 
 audio_ports_ext := ext.Plugin_Audio_Ports {
 	count = proc "c" (plugin: ^clap.Plugin, is_input: bool) -> u32 {
@@ -89,24 +100,70 @@ audio_ports_ext := ext.Plugin_Audio_Ports {
 		info: ^ext.Audio_Port_Info,
 	) -> bool {
 		context = runtime.default_context()
+		self := from_plugin(plugin)
 
-		info.channel_count = 2
-		info.port_type = ext.AUDIO_PORT_STEREO
 		info.in_place_pair = clap.INVALID_ID
 
+		// The sidechain is always stereo, whatever the main configuration.
 		if is_input && index == SIDECHAIN_PORT {
 			info.id = SIDECHAIN_PORT
 			copy(info.name[:], "Sidechain")
 			info.flags = 0
+			info.channel_count = 2
+			info.port_type = ext.AUDIO_PORT_STEREO
 			return true
 		}
 
 		if index != 0 {
 			return false
 		}
+		mono := self.port_config == .Mono
 		info.id = 0
 		copy(info.name[:], "Main")
 		info.flags = u32(ext.Audio_Port_Flag.IS_MAIN)
+		info.channel_count = mono ? 1 : 2
+		info.port_type = mono ? ext.AUDIO_PORT_MONO : ext.AUDIO_PORT_STEREO
+		return true
+	},
+}
+
+//
+// clap.audio-ports-config — the preset port layouts above, selectable while deactivated.
+//
+
+audio_ports_config_ext := ext.Plugin_Audio_Ports_Config {
+	count = proc "c" (plugin: ^clap.Plugin) -> u32 {
+		return len(Port_Config)
+	},
+
+	get = proc "c" (plugin: ^clap.Plugin, index: u32, config: ^ext.Audio_Ports_Config) -> bool {
+		if index >= u32(len(Port_Config)) {
+			return false
+		}
+		context = runtime.default_context()
+
+		mono := Port_Config(index) == .Mono
+		config^ = {}
+		config.id = clap.Clap_Id(index)
+		copy(config.name[:], mono ? "Mono" : "Stereo")
+		config.input_port_count = 2 // main + sidechain
+		config.output_port_count = 1
+		config.has_main_input = true
+		config.main_input_channel_count = mono ? 1 : 2
+		config.main_input_port_type = mono ? ext.AUDIO_PORT_MONO : ext.AUDIO_PORT_STEREO
+		config.has_main_output = true
+		config.main_output_channel_count = mono ? 1 : 2
+		config.main_output_port_type = mono ? ext.AUDIO_PORT_MONO : ext.AUDIO_PORT_STEREO
+		return true
+	},
+
+	select = proc "c" (plugin: ^clap.Plugin, config_id: clap.Clap_Id) -> bool {
+		// [main-thread & plugin-deactivated] - the port layout cannot change mid-stream.
+		self := from_plugin(plugin)
+		if self.activated || config_id >= clap.Clap_Id(len(Port_Config)) {
+			return false
+		}
+		self.port_config = Port_Config(config_id)
 		return true
 	},
 }

@@ -293,7 +293,9 @@ downward from the top, that the space below the trace stays clear, and that the 
 ladder renders.
 
 **Phase 8 — Polish.** Presets (`clap.preset-load`), `clap.remote-controls` for hardware
-surfaces, param modulation, GUI resize. (Code signing and packaging for distribution are
+surfaces, param modulation (and re-adding `MODULATABLE` with it — the flag was dropped
+in the polish batch because advertising modulation that `handle_event` ignores is a
+silent no-op in hosts), GUI resize. (Code signing and packaging for distribution are
 deliberately deferred until the plugin has had time in real sessions.)
 
 **Post-review correctness batch. ✅ DONE.** A full code review found four latent defects
@@ -323,7 +325,38 @@ scheme when they arrive, and the `(id, value)` state format already tolerates it
 Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test src/dsp`
 **27** and `odin test src/plugin` **4**, all passing; `./build.sh --offline` **42
 checks, all passing** (new: meters start at silence, three degraded-port shapes, state
-round trip with latency announcement); `./build.sh --gui` **34 checks, all passing**.
+round trip with latency announcement); `./build.sh --gui` **35 checks, all passing**.
+
+**Audio polish batch. ✅ DONE.** Four audible-quality fixes and one port feature:
+
+- **Bypass crossfade.** Bypass was an instantaneous switch between the processed path
+  and the latency-aligned dry path - a guaranteed click whenever the two levels differ
+  (which, with any compression at all, is always). It is now a 20 ms crossfade through
+  the smoother set, so it is sample-accurate in onset and click-free in transition. The
+  offline harness measures the largest sample-to-sample jump across a mid-signal toggle:
+  0.052 (the sine's own natural slope) vs the 0.257 a hard switch would produce.
+- **Auto makeup and mix are smoothed.** Auto makeup is folded *into* the Makeup
+  smoother's target (via a shared `curve_from_values` helper, replacing the separately
+  cached `auto_makeup_db`), so automating the curve with auto makeup on ramps the
+  compensation instead of stepping it. Mix gets its own smoother for the same reason.
+- **GR metering is peak-per-block.** The meter previously read the envelope's final
+  sample of the block, missing transients that attacked and recovered inside one buffer;
+  it now tracks the deepest reduction applied anywhere in the block.
+- **Mono port configuration** via `clap.audio-ports-config`: "Stereo" (default) and
+  "Mono" (one-channel main in/out; the sidechain stays stereo). Selection is refused
+  while active, per the spec. `process` needed no mono-specific path - the correctness
+  batch's port hardening already made it channel-count agnostic, and the offline host
+  proves the mono layout compresses to the same figure as stereo.
+
+Also: `MODULATABLE` was dropped from `FLAGS_CONTINUOUS` - `handle_event` ignores
+`PARAM_MOD`, and a modulatable-looking parameter that silently does nothing is exactly
+the failure mode `NOT_IMPLEMENTED` discipline exists to prevent. Phase 8 re-adds the
+flag together with the implementation.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test src/dsp`
+**27** and `odin test src/plugin` **4**, all passing; `./build.sh --offline` **50
+checks, all passing** (new: bypass-transition click detector, config count/layout/
+select/rescan, mono compression figure); `./build.sh --gui` **35 checks, all passing**.
 
 ## Feasibility notes
 

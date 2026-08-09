@@ -182,6 +182,8 @@ Plugin :: struct {
 	latency: ^ext.Plugin_Latency,
 	tail:    ^ext.Plugin_Tail,
 	state:   ^ext.Plugin_State,
+	ports:   ^ext.Plugin_Audio_Ports,
+	configs: ^ext.Plugin_Audio_Ports_Config,
 	meters:  ^Meter_Readback,
 }
 
@@ -210,6 +212,10 @@ plugin_load :: proc(path: string) -> (p: Plugin, ok: bool) {
 	p.latency = (^ext.Plugin_Latency)(p.plugin.get_extension(p.plugin, ext.EXT_LATENCY))
 	p.tail = (^ext.Plugin_Tail)(p.plugin.get_extension(p.plugin, ext.EXT_TAIL))
 	p.state = (^ext.Plugin_State)(p.plugin.get_extension(p.plugin, ext.EXT_STATE))
+	p.ports = (^ext.Plugin_Audio_Ports)(p.plugin.get_extension(p.plugin, ext.EXT_AUDIO_PORTS))
+	p.configs = (^ext.Plugin_Audio_Ports_Config)(
+		p.plugin.get_extension(p.plugin, ext.EXT_AUDIO_PORTS_CONFIG),
+	)
 	p.meters = (^Meter_Readback)(p.plugin.get_extension(p.plugin, METER_READBACK_ID))
 	return p, true
 }
@@ -469,6 +475,136 @@ run_degraded :: proc(p: Plugin, mode: Degradation, block: int = 512) -> f64 {
 	return db(peak)
 }
 
+// Runs a mono signal through a one-channel main in/out pair - the layout the mono port
+// configuration declares. The sidechain port stays connected (stereo, silent), exactly
+// as the configuration describes it.
+run_mono :: proc(p: Plugin, amplitude, frequency, seconds: f64, block: int = 512) -> f64 {
+	in_data := make([]f32, block)
+	defer delete(in_data)
+	out_data := make([]f32, block)
+	defer delete(out_data)
+	sc_data := make([]f32, 2 * block)
+	defer delete(sc_data)
+
+	in_ch := [1][^]f32{raw_data(in_data)}
+	out_ch := [1][^]f32{raw_data(out_data)}
+	sc_ch := [2][^]f32{raw_data(sc_data), raw_data(sc_data[block:])}
+
+	inputs := [2]clap.Audio_Buffer {
+		{data32 = raw_data(in_ch[:]), channel_count = 1},
+		{data32 = raw_data(sc_ch[:]), channel_count = 2},
+	}
+	output := clap.Audio_Buffer {
+		data32        = raw_data(out_ch[:]),
+		channel_count = 1,
+	}
+
+	empty: Event_List
+	event_list_init(&empty)
+	defer delete(empty.items)
+
+	total := int(SR * seconds)
+	step := 2 * math.PI * frequency / SR
+	phase := 0.0
+	measure_from := total * 3 / 4
+	produced := 0
+	peak := 0.0
+
+	p.plugin.start_processing(p.plugin)
+	for produced < total {
+		frames := min(block, total - produced)
+		for i in 0 ..< frames {
+			in_data[i] = f32(amplitude * math.sin(phase))
+			phase += step
+		}
+
+		process := clap.Process {
+			steady_time         = i64(produced),
+			frames_count        = u32(frames),
+			transport           = nil,
+			audio_inputs        = raw_data(inputs[:]),
+			audio_outputs       = &output,
+			audio_inputs_count  = 2,
+			audio_outputs_count = 1,
+			in_events           = &empty.vtable,
+			out_events          = &sink,
+		}
+		p.plugin.process(p.plugin, &process)
+
+		for i in 0 ..< frames {
+			if produced + i >= measure_from {
+				peak = max(peak, f64(abs(out_data[i])))
+			}
+		}
+		produced += frames
+	}
+	p.plugin.stop_processing(p.plugin)
+	return peak
+}
+
+// Toggling bypass must crossfade, not switch. A hard switch between two different gain
+// levels is a waveform discontinuity - a click - which shows up as a sample-to-sample
+// jump far larger than anything the signal itself can produce. Returns the largest such
+// jump over the run.
+measure_bypass_transition :: proc(p: Plugin, block: int = 512) -> f64 {
+	main := buffers_make(block)
+	side := buffers_make(block)
+	output := buffers_make(block)
+	inputs := [2]clap.Audio_Buffer{main.buffer, side.buffer}
+
+	empty: Event_List
+	event_list_init(&empty)
+	defer delete(empty.items)
+	toggle: Event_List
+	event_list_init(&toggle)
+	event_list_push(&toggle, param_id(p, "Bypass"), 1)
+	defer delete(toggle.items)
+
+	total := int(SR * 0.5)
+	step := 2 * math.PI * 1000 / SR
+	phase := 0.0
+	produced := 0
+	previous := 0.0
+	jump := 0.0
+
+	p.plugin.start_processing(p.plugin)
+	for produced < total {
+		frames := min(block, total - produced)
+		for i in 0 ..< frames {
+			value := from_db(-8) * math.sin(phase)
+			phase += step
+			main.data[0][i] = f32(value)
+			main.data[1][i] = f32(value)
+			side.data[0][i] = 0
+			side.data[1][i] = 0
+		}
+
+		process := clap.Process {
+			steady_time         = i64(produced),
+			frames_count        = u32(frames),
+			transport           = nil,
+			audio_inputs        = raw_data(inputs[:]),
+			audio_outputs       = &output.buffer,
+			audio_inputs_count  = 2,
+			audio_outputs_count = 1,
+			in_events           = produced == total / 2 ? &toggle.vtable : &empty.vtable,
+			out_events          = &sink,
+		}
+		p.plugin.process(p.plugin, &process)
+
+		for i in 0 ..< frames {
+			current := f64(output.data[0][i])
+			if produced + i > 0 {
+				jump = max(jump, abs(current - previous))
+			}
+			previous = current
+		}
+		produced += frames
+	}
+	p.plugin.stop_processing(p.plugin)
+	return jump
+}
+
 failures := 0
 
 check :: proc(name: string, actual, expected, tolerance: f64, unit := "dB") {
@@ -602,6 +738,14 @@ main :: proc() {
 	out = db(run_sine(p, from_db(-8.0), 1000, 0.5))
 	check("bypassed signal is untouched", out, -8, 0.05)
 	set_params(p, []Setting{{"Bypass", 0}})
+
+	fmt.println()
+	fmt.println("bypass crossfade")
+	// A hard switch between two different gains is a waveform discontinuity - a click.
+	// The steepest jump this -8 dBFS 1 kHz tone can make on its own is about 0.052 per
+	// sample; a hard wet-to-dry switch here would jump by 0.257.
+	jump := measure_bypass_transition(p)
+	check("bypass toggle crossfades instead of clicking", jump, 0.05, 0.05, "")
 
 	fmt.println()
 	fmt.println("mix (parallel compression)")
@@ -742,6 +886,41 @@ main :: proc() {
 	check("impulse delay at 5 ms", f64(measure_impulse_delay(p)), expected_latency, 0, "smp")
 
 	p.plugin.deactivate(p.plugin)
+
+	fmt.println()
+	fmt.println("port configurations")
+	// Mono tracks need a mono layout. The plugin offers one, selection works only while
+	// deactivated, the port scan then reports it, and mono audio must compress exactly
+	// like stereo did (still threshold -20, ratio 4 from the state round trip above).
+	config_count := p.configs.count(p.plugin)
+	check("two port configurations", f64(config_count), 2, 0, "")
+
+	config: ext.Audio_Ports_Config
+	got_config := p.configs.get(p.plugin, 1, &config)
+	mono_io :=
+		got_config &&
+		config.main_input_channel_count == 1 &&
+		config.main_output_channel_count == 1
+	check("mono config narrows main in and out to one channel", mono_io ? 1 : 0, 1, 0, "")
+	check("mono config keeps the sidechain port", config.input_port_count == 2 ? 1 : 0, 1, 0, "")
+	check(
+		"mono config selectable while deactivated",
+		p.configs.select(p.plugin, config.id) ? 1 : 0,
+		1,
+		0,
+		"",
+	)
+
+	port: ext.Audio_Port_Info
+	p.ports.get(p.plugin, 0, true, &port)
+	check("main input now reports one channel", f64(port.channel_count), 1, 0, "")
+	p.ports.get(p.plugin, 0, false, &port)
+	check("main output now reports one channel", f64(port.channel_count), 1, 0, "")
+
+	p.plugin.activate(p.plugin, SR, 1, 512)
+	check("mono config compresses like stereo", db(run_mono(p, from_db(-8), 1000, 1.0)), -17, 0.6)
+	p.plugin.deactivate(p.plugin)
+
 	p.plugin.destroy(p.plugin)
 	p.entry.deinit()
 

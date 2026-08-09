@@ -69,14 +69,16 @@ RATIO_MAX :: 20.0
 SIDECHAIN_HIGHPASS_MIN :: 20.0
 
 FLAG_AUTOMATABLE :: u32(ext.Param_Info_Flag.AUTOMATABLE)
-FLAG_MODULATABLE :: u32(ext.Param_Info_Flag.MODULATABLE)
+FLAG_MODULATABLE :: u32(ext.Param_Info_Flag.MODULATABLE) // unused until PARAM_MOD is handled
 FLAG_STEPPED :: u32(ext.Param_Info_Flag.STEPPED)
 FLAG_ENUM :: u32(ext.Param_Info_Flag.IS_ENUM)
 FLAG_BYPASS :: u32(ext.Param_Info_Flag.BYPASS)
 FLAG_HIDDEN :: u32(ext.Param_Info_Flag.HIDDEN)
 
-// Continuous parameters can be modulated; stepped ones only automated.
-FLAGS_CONTINUOUS :: FLAG_AUTOMATABLE | FLAG_MODULATABLE
+// Continuous parameters are automatable. They are deliberately NOT modulatable yet:
+// PARAM_MOD events are ignored, so advertising MODULATABLE would offer hosts a control
+// that silently does nothing. The flag returns when modulation is implemented (Phase 8).
+FLAGS_CONTINUOUS :: FLAG_AUTOMATABLE
 FLAGS_SWITCH :: FLAG_AUTOMATABLE | FLAG_STEPPED
 FLAGS_CHOICE :: FLAG_AUTOMATABLE | FLAG_STEPPED | FLAG_ENUM
 

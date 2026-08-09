@@ -158,7 +158,7 @@ MultiComp.clap/Contents/
 
 Validation is the gate — run it before claiming anything works. Current status:
 **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **4**
-plugin tests, **42** offline audio checks and **34** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
+plugin tests, **50** offline audio checks and **35** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
@@ -276,10 +276,10 @@ an id an older build does not recognise is skipped on load, and a parameter miss
 an older session keeps its default. Bump `STATE_VERSION` only when the *encoding* changes,
 not when parameters are added.
 
-Flag sets are pre-composed: `FLAGS_CONTINUOUS` (automatable + modulatable),
-`FLAGS_SWITCH` (automatable + stepped), `FLAGS_CHOICE` (+ `IS_ENUM`). Stepped values are
-rounded to integers in `clamp_param`, because hosts and our choice indexing have to agree
-on what the value means.
+Flag sets are pre-composed: `FLAGS_CONTINUOUS` (automatable; `MODULATABLE` returns when
+`PARAM_MOD` is actually handled), `FLAGS_SWITCH` (automatable + stepped), `FLAGS_CHOICE`
+(+ `IS_ENUM`). Stepped values are rounded to integers in `clamp_param`, because hosts and
+our choice indexing have to agree on what the value means.
 
 **A parameter whose behaviour is not implemented yet must carry `NOT_IMPLEMENTED`**
 (which is `CLAP_PARAM_IS_HIDDEN` — CLAP documents that flag as exactly "should not be shown
@@ -287,10 +287,13 @@ to the user, because it is currently not used"). Otherwise a host's generic UI o
 control that silently does nothing, which reads as a bug. Drop the flag in the same change
 that makes the parameter work. `./build.sh --offline` prints the visible/hidden split.
 
-**Audio ports**: two stereo inputs (main + sidechain) and one stereo output. CLAP has no
-dedicated sidechain flag — the sidechain is identified by *not* carrying `IS_MAIN`. Hosts
-often leave it disconnected, so `process` must fall back to the main input rather than
-assuming `audio_inputs_count > 1`.
+**Audio ports**: two inputs (main + sidechain) and one output, stereo by default. CLAP
+has no dedicated sidechain flag — the sidechain is identified by *not* carrying
+`IS_MAIN`. Hosts often leave it disconnected, so `process` must fall back to the main
+input rather than assuming `audio_inputs_count > 1`. `clap.audio-ports-config` offers a
+mono layout (one-channel main in/out, stereo sidechain) that hosts may select while the
+plugin is deactivated; `process` is channel-count agnostic, so mono needs no DSP path of
+its own.
 
 **Defaults must leave the plugin transparent.** Inserting it and touching nothing may not
 change the signal. Ratio therefore defaults to 1:1, where the gain computer returns its
