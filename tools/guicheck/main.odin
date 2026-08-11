@@ -59,6 +59,16 @@ main :: proc() {
 	check("NSOpenGLContext created", ui.gl_context != nil)
 	check("NSView created", ui.view != nil)
 
+	// The runtime NSView subclass is registered process-wide and never disposed, so its
+	// name carries this image's address - a host that unloads and reloads the plugin must
+	// not inherit a class whose method pointers are in an unmapped image. Asking for it
+	// twice has to return the same class rather than failing on the duplicate name, since
+	// one host can instantiate the plugin many times.
+	class_a := gui.ensure_view_class()
+	class_b := gui.ensure_view_class()
+	check("view class registers", class_a != nil)
+	check("view class is registered once per image", class_a == class_b)
+
 	gui.gl_context_make_current(ui.gl_context)
 	check("GL symbols loaded", gui.load_gl())
 

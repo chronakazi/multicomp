@@ -185,6 +185,11 @@ attach :: proc(g: ^Gui, parent: rawptr) -> bool {
 		return false
 	}
 
+	// A host may call set_parent more than once - re-parenting, or simply being thorough.
+	// addSubview on a view that already has a superview would install it twice. Removing
+	// first is a no-op when there is no superview, and our own reference from
+	// class_createInstance keeps the view alive across the swap.
+	view_remove_from_superview(g.view)
 	NS.View_addSubview((^NS.View)(parent), g.view)
 
 	if g.fallback_timer == nil {

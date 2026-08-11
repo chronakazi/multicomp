@@ -511,6 +511,70 @@ band_feedback_reduces_less_than_feedforward :: proc(t: ^testing.T) {
 	)
 }
 
+@(test)
+band_feedback_stays_stable_at_extremes :: proc(t: ^testing.T) {
+	// The feedback detector closes a loop through the gain it applied last sample, so it
+	// is the one topology that can ring or run away. The corner that provokes it is the
+	// fastest attack the panel offers against the deepest curve: at 0.1 ms the envelope
+	// tracks nearly sample-by-sample, and at inf:1 the curve answers a level change with
+	// the whole of it. Feed it 40 dB over threshold and require the loop to settle.
+	band: Compressor_Band
+	band_init(&band, SR, 1)
+	gain_computer_set_limiting(&band.computer, -40, 0)
+	band_set_times(&band, 0.1, 5, SR)
+	band.topology = .Feedback
+	band_reset(&band)
+
+	// Steady full-scale tone, 40 dB above the threshold.
+	settled_low, settled_high := math.INF_F64, -math.INF_F64
+	for i in 0 ..< int(SR) {
+		phase := 2 * math.PI * 1000 * f64(i) / SR
+		gain_db := band_tick_mono(&band, math.sin(phase))
+
+		testing.expectf(
+			t,
+			!math.is_nan(gain_db) && !math.is_inf(gain_db),
+			"gain went non-finite at sample %d: %f",
+			i,
+			gain_db,
+		)
+		if math.is_nan(gain_db) || math.is_inf(gain_db) {
+			return
+		}
+
+		// Over the final tenth of a second the loop must be sitting still, not hunting.
+		if i >= int(SR) * 9 / 10 {
+			settled_low = min(settled_low, gain_db)
+			settled_high = max(settled_high, gain_db)
+		}
+	}
+
+	// A sine's own peaks and troughs move the detector, so some ripple is expected; a
+	// loop that was oscillating would swing far wider than the programme material does.
+	// Measured at 0.377 dB, so this leaves room without being vacuous.
+	ripple := settled_high - settled_low
+	testing.expectf(
+		t,
+		ripple < 3,
+		"feedback loop is hunting: gain ranged over %.3f dB (%.3f .. %.3f) once settled",
+		ripple,
+		settled_low,
+		settled_high,
+	)
+
+	// And it must actually be limiting, not sitting at unity or driven to silence. It
+	// settles near -20 dB rather than the -40 a feed-forward limiter would apply, which
+	// is the topology working as designed: the detector sees the output, so the loop
+	// solves gain = -(input - threshold)/2 and an inf:1 feedback limiter behaves like 2:1.
+	testing.expectf(
+		t,
+		settled_high < -1 && settled_low > -80,
+		"settled gain %.3f .. %.3f dB is not a working limiter",
+		settled_low,
+		settled_high,
+	)
+}
+
 //
 // Stereo link
 //

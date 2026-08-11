@@ -262,6 +262,36 @@ read_mirror :: proc(p: Plugin, param: u32) -> f64 {
 	return p.mirror.get(p.plugin, param)
 }
 
+// Pushes one parameter event through a block whose sample loop cannot carry it: either a
+// zero-length block, or an event stamped past the end. Both are host edge cases, and both
+// used to be dropped on the floor with no way for the host to notice.
+run_stray_event :: proc(p: Plugin, param: u32, value: f64, frames: u32, time: u32) {
+	main := buffers_make(512)
+	side := buffers_make(512)
+	output := buffers_make(512)
+	inputs := [2]clap.Audio_Buffer{main.buffer, side.buffer}
+
+	list: Event_List
+	event_list_init(&list)
+	defer delete(list.items)
+	event_list_push(&list, param, value, time)
+
+	p.plugin.start_processing(p.plugin)
+	block := clap.Process {
+		steady_time         = 0,
+		frames_count        = frames,
+		transport           = nil,
+		audio_inputs        = raw_data(inputs[:]),
+		audio_outputs       = &output.buffer,
+		audio_inputs_count  = 2,
+		audio_outputs_count = 1,
+		in_events           = &list.vtable,
+		out_events          = &sink,
+	}
+	p.plugin.process(p.plugin, &block)
+	p.plugin.stop_processing(p.plugin)
+}
+
 // A deliberately sloppy host: reports events it then refuses to hand over. Both process()
 // and flush() have to treat a nil header as a hole to skip rather than a pointer.
 holey_events :: proc() -> clap.Input_Events {
@@ -919,6 +949,27 @@ main :: proc() {
 	}
 
 	fmt.println()
+	fmt.println("event edge cases")
+	// The sample loop runs `for frame < frames_count`, so a zero-length block never
+	// enters it and an event stamped past the end is never reached. Neither may lose the
+	// parameter change: the host has no way to tell that it vanished.
+	{
+		threshold := param_id(p, "Threshold")
+		set_params(p, []Setting{{"Threshold", -20}})
+
+		run_stray_event(p, threshold, -25, 0, 0)
+		landed := 0.0
+		p.params.get_value(p.plugin, threshold, &landed)
+		check("a zero-length block still applies its events", landed, -25, 0.001, "dB")
+
+		run_stray_event(p, threshold, -30, 512, 9999)
+		p.params.get_value(p.plugin, threshold, &landed)
+		check("an event past the end of the block still applies", landed, -30, 0.001, "dB")
+
+		set_params(p, []Setting{{"Threshold", -20}})
+	}
+
+	fmt.println()
 	fmt.println("state")
 	// A state round trip must preserve the values, and a lookahead loaded while active
 	// must announce the latency change - it cannot take effect until reactivation.
@@ -944,6 +995,16 @@ main :: proc() {
 	// and would hide a load that never did. This is the state a preset loaded on a stopped
 	// transport leaves the panel in.
 	check("state load republishes the GUI mirror", read_mirror(p, threshold_id), -20, 0.001, "dB")
+	// And the staged set has to reach the DSP, not only the mirror. A load that moved the
+	// panel but not the audio would be the mirror bug inverted, and just as quiet. No
+	// flush in between, deliberately: process() is what has to pick it up. -8 dBFS at the
+	// loaded -20/4:1 is 9 dB of reduction; at the -33/7.5:1 it replaced it would be 21.7.
+	check(
+		"state load reaches the DSP, not just the mirror",
+		db(run_sine(p, from_db(-8.0), 1000, 1.0)),
+		-17,
+		0.6,
+	)
 	check("latency change announced on load", f64(latency_changed_count), 1, 0, "")
 	// CLAP requires the reported latency to stay latched until reactivation, even
 	// though the parameter now says otherwise.

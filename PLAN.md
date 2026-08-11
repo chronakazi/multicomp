@@ -458,19 +458,50 @@ source hard left, input trim does not feed the external sidechain, state load re
 the mirror, flush survives a hole in the event list) and `./build.sh --gui` **36 checks**
 (new: brushed texture created), all passing.
 
-Still open from the review, deliberately not taken in this batch:
+**Final cleanup batch. ✅ DONE.** The five items the review batch left open, closed out.
 
-- **`state.load` writes `values` from the main thread while `process` reads them**, so a
-  preset load during playback can be seen half-applied for one block. Same class on the
-  read side for `params.get_value` and `state.save`. Benign on arm64, where an aligned
-  f64 does not tear, but the mirror exists precisely for this.
-- **`frames_count == 0` drops every event in the block**, as does any event whose `.time`
-  is past the end — the `for frame < frames_count` loop never runs.
-- **The runtime Objective-C class is registered once per process and never disposed**, so
-  a host that `dlclose`s and reloads the plugin gets a class whose method pointers are in
-  an unmapped image.
-- **`gui.attach` is not idempotent** — a second `set_parent` adds the subview twice.
-- **Feedback topology has no stability test** at fast attack and high ratio.
+- **`values` now has exactly one writer.** `state.load` is `[main-thread]` with no
+  `!active` restriction — confirmed against the header — so it was a second writer racing
+  `process`, and a preset could be seen half-applied for a block. It now fills a `staged`
+  set, publishes the mirror, and sets `staged_pending` with a Release store; `process`,
+  `flush` and `activate` — which CLAP guarantees never overlap — swap it in whole through
+  `apply_staged`. Main-thread readers (`params.get_value`, `state.save`) moved to the
+  mirror, which is safe because `publish_values` runs before process/flush return, so it
+  never lags `values` from a main-thread observer.
+
+  Staging introduces its own failure mode — a load that moves the panel but not the audio,
+  the earlier mirror bug inverted — so it is guarded from both ends: the mirror check that
+  already existed, plus a new one that runs audio with no flush in between and measures
+  the compression. With `apply_staged` stubbed out the audio check reads -29.6 dB against
+  the loaded preset's -17, and the three latency checks fail with it.
+
+  One window remains and is accepted: two state loads inside a single audio block would
+  overwrite `staged` mid-copy. That needs a host loading two presets within a few
+  milliseconds, and the result is a one-block mixture — exactly what the old code did on
+  *every* load. Strictly better, so it was not worth a spin-wait on the main thread.
+- **Zero-length blocks and out-of-range event times no longer drop events.** The sample
+  loop runs `for frame < frames_count`, so it never entered a zero-length block and never
+  reached an event stamped past the end; both silently lost the parameter change. Anything
+  the loop did not reach is now applied after it, at the end of the block.
+- **The runtime `NSView` subclass is named after the loaded image's address.** An
+  Objective-C class cannot be safely unregistered while instances may exist, so a host that
+  `dlclose`d the plugin and loaded it again would have found the old class with every
+  method pointer aimed into an unmapped image. Loaded once, all instances still share one
+  class; reloaded elsewhere, the name differs and a fresh one is built; reloaded at the
+  same address, the old pointers are valid again anyway.
+- **`gui.attach` is idempotent** — it removes the view from any superview first, so a host
+  calling `set_parent` twice cannot install it twice.
+- **Feedback topology has a stability test** at the corner that provokes it: 0.1 ms attack,
+  inf:1, 40 dB over threshold. It asserts the gain stays finite, settles (measured ripple
+  0.377 dB), and is actually limiting. Worth recording what it settles *at*: about -20 dB,
+  not the -40 a feed-forward limiter would apply, because the detector sees the output and
+  the loop solves `gain = -(input - threshold)/2`. An inf:1 feedback limiter behaves like
+  2:1 — the same mechanism as the existing "feedback reduces less than feed-forward" test,
+  at its extreme.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**;
+`odin test src/dsp` **28** and `odin test src/plugin` **5**, all passing;
+`./build.sh --offline` **58 checks** and `./build.sh --gui` **38 checks**, all passing.
 
 ## Feasibility notes
 

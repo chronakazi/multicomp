@@ -1,5 +1,7 @@
 package plugin
 
+import "base:intrinsics"
+
 import clap "proj:clap-odin"
 import ext "proj:clap-odin/ext"
 
@@ -39,7 +41,11 @@ state_ext := ext.Plugin_State {
 
 		for _, id in PARAMS {
 			entry_id := u32(id)
-			value := self.values[id]
+			// The mirror, not `values`: this is [main-thread] and the audio thread owns
+			// that array. The two agree between blocks, and while a load is staged the
+			// mirror is the one already holding it - so a save straight after a load
+			// writes what was loaded.
+			value := read_published(&self.mirror[id])
 			if !write_full(stream, &entry_id, size_of(entry_id)) {
 				return false
 			}
@@ -74,8 +80,12 @@ state_ext := ext.Plugin_State {
 			return false
 		}
 
-		// Anything the saved state does not mention keeps its default.
-		reset_to_defaults(self)
+		// Built up in the staging set, not in `values` - the audio thread may be mid-block
+		// and it owns that array. Anything the saved state does not mention keeps its
+		// default, so the set is always complete rather than a patch over what was there.
+		for param, id in PARAMS {
+			self.staged[id] = param.default
+		}
 
 		for _ in 0 ..< count {
 			entry_id: u32
@@ -90,21 +100,32 @@ state_ext := ext.Plugin_State {
 				continue // parameter removed in a later version; ignore it
 			}
 			id := Param_Id(entry_id)
-			self.values[id] = clamp_param(id, value)
+			self.staged[id] = clamp_param(id, value)
 		}
 
-		// The GUI reads values from the mirror, not from this array. Without this the
-		// panel keeps showing whatever reset_to_defaults published until the next
-		// process() or flush() - which on a stopped transport may never come, so a
-		// freshly loaded preset would open with every knob still at its default.
-		publish_values(self)
+		// Publish before handing the set over. The GUI reads values from the mirror, so
+		// without this the panel keeps showing the outgoing preset until the next
+		// process() or flush() - which on a stopped transport may never come. It also
+		// makes get_value and save report the load immediately, before the audio thread
+		// has had a block in which to pick it up.
+		for _, id in PARAMS {
+			publish(&self.mirror[id], self.staged[id])
+		}
+
+		// Release, so the values above are visible to whichever thread sees the flag.
+		// From here the set belongs to process/flush/activate.
+		intrinsics.atomic_store_explicit(&self.staged_pending, true, .Release)
+
+		// With the transport stopped a host may never call process, and the load would
+		// sit staged indefinitely. Asking for a flush is what actually lands it.
+		request_flush(self)
 
 		// A loaded lookahead only takes effect on the next activation, because latency
 		// is latched while active. If the value disagrees with the latched latency,
 		// announce it and ask for a restart - the same path an automation edit takes.
 		// Inactive plugins need nothing: activate latches the loaded value.
-		if self.activated && lookahead_samples(self) != self.latency_samples {
-			request_latency_update(self)
+		if self.activated {
+			request_latency_update(self, lookahead_samples_for(self, self.staged[.Lookahead]))
 		}
 		return true
 	},

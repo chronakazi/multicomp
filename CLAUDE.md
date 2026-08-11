@@ -158,8 +158,8 @@ MultiComp.clap/Contents/
 ```
 
 Validation is the gate — run it before claiming anything works. Current status:
-**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **5**
-plugin tests, **55** offline audio checks and **36** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
+**21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **28** DSP tests, **5**
+plugin tests, **58** offline audio checks and **38** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
@@ -323,6 +323,13 @@ predates it. Absence there is not evidence the flag is missing; check the raw
   latches at `activate` and asks the host for a restart from `on_main_thread`; it must not
   be automatable. A state load that changes lookahead goes through the same announce path
   (guarded by `self.activated`), not a silent swap.
+- **`values` has exactly one writer.** `process`, `flush` and `activate` write it, and CLAP
+  guarantees those never overlap. `state.load` is `[main-thread]` with no `!active`
+  restriction, so it must *not* write it — it fills `staged`, publishes the mirror, and
+  sets `staged_pending`; the next of those three calls swaps the set in whole via
+  `apply_staged`. That is what stops a preset being seen half-applied for a block.
+  Main-thread readers (`params.get_value`, `state.save`) read `mirror`, which is atomic and
+  — because `publish_values` runs before process/flush return — never lags behind `values`.
 - `process` must survive degraded ports — a missing input array, a nil `data32`, or a
   zero-channel port all produce silence, and output channels beyond the input's are
   zeroed. An untouched output buffer repeats stale audio, which reads as a hang.

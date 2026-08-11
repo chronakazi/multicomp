@@ -11,12 +11,26 @@ package gui
 
 import "base:intrinsics"
 import "base:runtime"
+import "core:fmt"
 import NS "core:sys/darwin/Foundation"
 
-VIEW_CLASS_NAME :: "MulticompPanelView"
+// An Objective-C class is registered process-wide and cannot be safely unregistered while
+// instances of it may exist, so this one is never disposed. That leaves a trap: a host
+// that dlclose()s the plugin and loads it again would find the old class still registered,
+// with every method pointer aimed into an image that is no longer mapped.
+//
+// So the name carries the address of this image's own code. Loaded once, every instance
+// shares one class, which is what we want. Reloaded at a different address - the usual
+// outcome - the name differs and a fresh class is built. Reloaded at the *same* address,
+// the name matches and so does the code the old pointers refer to, so reuse is correct
+// too. Two different builds side by side get one class each.
+VIEW_CLASS_PREFIX :: "MulticompPanelView_"
 
 @(private = "file")
 panel_class: NS.Class
+
+@(private = "file")
+class_name_buffer: [64]u8
 
 // Vertical travel, in points, for a knob to cross its whole range. Roughly a screen's
 // worth of movement for full sweep, which is the usual feel.
@@ -37,7 +51,8 @@ ensure_view_class :: proc() -> NS.Class {
 		return panel_class
 	}
 
-	existing := NS.objc_lookUpClass(VIEW_CLASS_NAME)
+	name := class_name()
+	existing := NS.objc_lookUpClass(name)
 	if existing != nil {
 		panel_class = existing
 		return panel_class
@@ -48,7 +63,7 @@ ensure_view_class :: proc() -> NS.Class {
 		return nil
 	}
 
-	cls := NS.objc_allocateClassPair(super, VIEW_CLASS_NAME, size_of(rawptr))
+	cls := NS.objc_allocateClassPair(super, name, size_of(rawptr))
 	if cls == nil {
 		return nil
 	}
@@ -65,6 +80,21 @@ ensure_view_class :: proc() -> NS.Class {
 	NS.objc_registerClassPair(cls)
 	panel_class = cls
 	return panel_class
+}
+
+// The class name for this loaded image, built once into a static buffer. `ensure_view_class`
+// is the only caller and runs on the main thread behind the `panel_class` check.
+@(private = "file")
+class_name :: proc() -> cstring {
+	// The address of a procedure in this image, which moves when the image does.
+	text := fmt.bprintf(
+		class_name_buffer[:len(class_name_buffer) - 1],
+		"%s%p",
+		VIEW_CLASS_PREFIX,
+		rawptr(ensure_view_class),
+	)
+	class_name_buffer[len(text)] = 0
+	return cstring(raw_data(class_name_buffer[:]))
 }
 
 @(private = "file")

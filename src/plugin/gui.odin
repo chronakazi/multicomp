@@ -281,7 +281,7 @@ make_bridge :: proc(self: ^Multicomp) -> gui.Bridge {
 // A parameter edit is useless until the audio thread drains it, and a host that is idle
 // may not call process() at all. clap.params.request_flush is the documented way to ask
 // for a flush; without it, moving a knob on a stopped transport would do nothing.
-request_flush :: proc(self: ^Multicomp) {
+request_flush :: proc "contextless" (self: ^Multicomp) {
 	if self.host_params != nil && self.host_params.request_flush != nil {
 		self.host_params.request_flush(self.host)
 	}

@@ -43,8 +43,17 @@ Multicomp :: struct {
 	sample_rate:       f64,
 	activated:         bool,
 
-	// Current value of every parameter, indexed by Param_Id.
+	// Current value of every parameter, indexed by Param_Id. Written *only* from
+	// process/flush/activate, which CLAP guarantees never overlap - so there is exactly
+	// one writer at any moment. Main-thread readers go to `mirror` instead.
 	values:            [Param_Id]f64,
+
+	// A state load arrives on the main thread while the audio thread may be mid-block.
+	// Writing `values` from there would be a second writer, and a preset could be seen
+	// half-applied for a block. The load stages a complete set here instead, and the
+	// next process/flush/activate swaps it in whole.
+	staged:            [Param_Id]f64,
+	staged_pending:    bool,
 
 	// The multiband seam: a fixed array plus a count, so growing to several bands needs
 	// no allocation on the audio thread. Phase 3 uses exactly one.
@@ -112,10 +121,27 @@ reset_to_defaults :: proc "contextless" (self: ^Multicomp) {
 
 // Mirrors the authoritative values where the GUI can read them without racing the audio
 // thread. Cheap enough to do once per block.
+//
+// Because this runs before process/flush return, and nothing else writes `values`, a
+// main-thread reader can never observe the mirror lagging behind: between calls the two
+// are identical. That is what makes it safe for get_value and state.save to read.
 publish_values :: proc "contextless" (self: ^Multicomp) {
 	for _, id in PARAMS {
 		publish(&self.mirror[id], self.values[id])
 	}
+}
+
+// Swaps in a state load that arrived while the audio thread owned `values`. Called from
+// the three places allowed to write them - process, flush and activate - none of which
+// can overlap, so the set lands whole or not at all.
+apply_staged :: proc "contextless" (self: ^Multicomp) {
+	if !intrinsics.atomic_load_explicit(&self.staged_pending, .Acquire) {
+		return
+	}
+	for _, id in PARAMS {
+		self.values[id] = self.staged[id]
+	}
+	intrinsics.atomic_store_explicit(&self.staged_pending, false, .Release)
 }
 
 // Drains GUI edits, applies them, and echoes them to the host so a knob move is recorded
@@ -147,7 +173,7 @@ drain_ui :: proc "contextless" (self: ^Multicomp, out_events: ^clap.Output_Event
 				value = clamp_param(id, value)
 				self.values[id] = value
 				if id == .Lookahead {
-					request_latency_update(self)
+					request_latency_update(self, lookahead_samples(self))
 				}
 			}
 			// Echo the value actually applied, so the host records what the DSP did.
@@ -218,10 +244,16 @@ push_gesture :: proc "contextless" (
 
 // Lookahead expressed in samples at the current sample rate.
 lookahead_samples :: proc "contextless" (self: ^Multicomp) -> u32 {
+	return lookahead_samples_for(self, self.values[.Lookahead])
+}
+
+// The same, for a lookahead that has not been applied yet - a state load has to decide
+// whether to announce a latency change before its values reach `values`.
+lookahead_samples_for :: proc "contextless" (self: ^Multicomp, milliseconds: f64) -> u32 {
 	if self.sample_rate <= 0 {
 		return 0
 	}
-	return u32(self.values[.Lookahead] / 1000 * self.sample_rate + 0.5)
+	return u32(milliseconds / 1000 * self.sample_rate + 0.5)
 }
 
 init :: proc "c" (plugin: ^clap.Plugin) -> bool {
@@ -259,6 +291,11 @@ activate :: proc "c" (plugin: ^clap.Plugin, sample_rate: f64, min_frames, max_fr
 	context = runtime.default_context()
 	self := from_plugin(plugin)
 	self.sample_rate = sample_rate
+
+	// A state load may have arrived while inactive, with nothing running to pick it up.
+	// It has to land before the lookahead below is latched, or latency would be latched
+	// from the outgoing preset.
+	apply_staged(self)
 
 	// Size for the maximum lookahead so the buffer never has to grow while active.
 	per_channel := int(MAX_LOOKAHEAD_MS / 1000 * sample_rate) + 2
@@ -452,6 +489,10 @@ band_set_detector :: proc "contextless" (self: ^Multicomp, mode: dsp.Detector_Mo
 process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Process_Status {
 	self := from_plugin(plugin)
 
+	// A preset that landed since the last block, swapped in whole before anything reads
+	// a parameter - so no block ever runs on a mixture of two states.
+	apply_staged(self)
+
 	// GUI edits first, so a knob move applies to this block rather than the next one.
 	drain_ui(self, process.out_events)
 
@@ -490,6 +531,18 @@ process :: proc "c" (plugin: ^clap.Plugin, process: ^clap.Process) -> clap.Proce
 		peak_out = max(peak_out, block_out)
 		gr_peak = max(gr_peak, block_gr)
 		frame = block_end
+	}
+
+	// Anything the loop above did not reach still has to be applied: an event stamped
+	// past the end of the block, or - since the loop runs zero times - every event in a
+	// zero-length one. Dropping them would silently lose a parameter change, and the
+	// host has no way to tell. They land at the end of the block, which is the closest
+	// sample to where they were asked for.
+	for next_event < event_count {
+		if header := process.in_events.get(process.in_events, next_event); header != nil {
+			handle_event(self, header)
+		}
+		next_event += 1
 	}
 
 	publish_meters(self, peak_in, peak_out, gr_peak, f64(process.frames_count))
@@ -729,7 +782,7 @@ handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header
 		self.values[id] = clamp_param(id, event.value)
 
 		if id == .Lookahead {
-			request_latency_update(self)
+			request_latency_update(self, lookahead_samples(self))
 		}
 	}
 }
@@ -737,8 +790,11 @@ handle_event :: proc "contextless" (self: ^Multicomp, header: ^clap.Event_Header
 // CLAP requires reported latency to stay constant while the plugin is active, so a
 // lookahead change cannot take effect immediately. Flag it and ask the host for a main
 // thread callback, where we can announce the change and request a restart.
-request_latency_update :: proc "contextless" (self: ^Multicomp) {
-	if lookahead_samples(self) == self.latency_samples {
+//
+// `target` is the latency the new lookahead would produce, passed in rather than read
+// back out because a state load has to ask this question before its values are live.
+request_latency_update :: proc "contextless" (self: ^Multicomp, target: u32) {
+	if target == self.latency_samples {
 		return
 	}
 	intrinsics.atomic_store_explicit(&self.latency_dirty, true, .Relaxed)

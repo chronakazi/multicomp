@@ -439,12 +439,15 @@ params_ext := ext.Plugin_Params {
 		return true
 	},
 
+	// [main-thread] - so it reads the atomic mirror rather than the audio thread's own
+	// array. Between calls to process/flush the two hold identical values, and while a
+	// state load is staged the mirror is the one already carrying it.
 	get_value = proc "c" (plugin: ^clap.Plugin, param_id: clap.Clap_Id, out_value: ^f64) -> bool {
 		if !is_valid_param(param_id) {
 			return false
 		}
 		self := from_plugin(plugin)
-		out_value^ = self.values[Param_Id(param_id)]
+		out_value^ = read_published(&self.mirror[Param_Id(param_id)])
 		return true
 	},
 
@@ -495,6 +498,7 @@ params_ext := ext.Plugin_Params {
 		out_events: ^clap.Output_Events,
 	) {
 		self := from_plugin(plugin)
+		apply_staged(self)
 		drain_ui(self, out_events)
 
 		count := in_events.size(in_events)
