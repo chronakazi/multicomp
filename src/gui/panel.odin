@@ -30,10 +30,35 @@ CHEEK :: 28 // walnut end cap width
 HEADER :: 86 // header band height
 TIER_SPLIT :: 306 // upper/lower tier divider
 
-draw_panel :: proc(vg: ^nvg.Context) {
+// `brush` is the tiled striation texture from `create_brush`. Zero is nanovg's own "no
+// such image", and falls back to stroking the lines individually. The chassis never
+// changes, but it is redrawn every frame regardless, so what it costs is the floor under
+// the whole panel's frame time.
+draw_panel :: proc(vg: ^nvg.Context, brush: int = 0) {
 	draw_cheeks(vg)
-	draw_faceplate(vg)
+	draw_faceplate(vg, brush)
 	draw_divisions(vg)
+}
+
+// The brushed texture as a repeating image: one lit column every BRUSH_PERIOD points.
+//
+// Drawn as individual hairlines this cost 0.80 ms of a 1.68 ms repaint - 95% of the
+// chassis, and four times the entire DSP - because nanovg re-tessellates ~380 separate
+// stroked paths on every frame. As one tiled fill it is 0.04 ms for the same striations.
+//
+// The handle belongs to the nanovg context that created it, so it is stored per Gui
+// rather than in a package global: two plugin instances have two contexts.
+//
+// Returns 0 if the texture could not be created, which is nanovg's own invalid handle -
+// valid ids start at 1, so a `>= 0` test would happily draw with a dead one.
+BRUSH_PERIOD :: 3
+
+create_brush :: proc(vg: ^nvg.Context) -> int {
+	// Straight (non-premultiplied) RGBA, matching what nvg.RGBA(255,255,255,6) meant when
+	// these were strokes - nanovg premultiplies an image without the PREMULTIPLIED flag.
+	texels: [BRUSH_PERIOD * 4]u8
+	texels[0], texels[1], texels[2], texels[3] = 255, 255, 255, 6
+	return nvg.CreateImageRGBA(vg, BRUSH_PERIOD, 1, {.REPEAT_X, .REPEAT_Y, .NEAREST}, texels[:])
 }
 
 @(private = "file")
@@ -48,14 +73,26 @@ draw_cheeks :: proc(vg: ^nvg.Context) {
 }
 
 @(private = "file")
-draw_faceplate :: proc(vg: ^nvg.Context) {
+draw_faceplate :: proc(vg: ^nvg.Context, brush: int) {
 	paint := nvg.LinearGradient(0, 0, 0, HEIGHT, hex(PANEL_TOP), hex(PANEL_BOTTOM))
 	nvg.BeginPath(vg)
 	nvg.Rect(vg, CHEEK, 0, WIDTH - CHEEK * 2, HEIGHT)
 	nvg.FillPaint(vg, paint)
 	nvg.Fill(vg)
 
-	// Brushed texture: fine vertical striations, cheap enough to redraw every frame.
+	// Brushed texture: fine vertical striations. Anchored at CHEEK so the lit columns
+	// land on the same coordinates the stroked version put them on.
+	if brush > 0 {
+		texture := nvg.ImagePattern(CHEEK, 0, BRUSH_PERIOD, 1, 0, brush, 1)
+		nvg.BeginPath(vg)
+		nvg.Rect(vg, CHEEK, 0, WIDTH - CHEEK * 2, HEIGHT)
+		nvg.FillPaint(vg, texture)
+		nvg.Fill(vg)
+		return
+	}
+
+	// No texture: stroke them. Only reached if image creation failed, which would mean
+	// the GL stack is in trouble anyway - but a bare faceplate is better than none.
 	nvg.Save(vg)
 	nvg.Scissor(vg, CHEEK, 0, WIDTH - CHEEK * 2, HEIGHT)
 	nvg.StrokeWidth(vg, 1)
@@ -66,7 +103,7 @@ draw_faceplate :: proc(vg: ^nvg.Context) {
 		nvg.LineTo(vg, x, HEIGHT)
 		nvg.StrokeColor(vg, nvg.RGBA(255, 255, 255, 6))
 		nvg.Stroke(vg)
-		x += 3
+		x += BRUSH_PERIOD
 	}
 	nvg.Restore(vg)
 }

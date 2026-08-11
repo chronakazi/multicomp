@@ -58,14 +58,7 @@ gui_ext := ext.Plugin_Gui {
 
 	destroy = proc "c" (plugin: ^clap.Plugin) {
 		context = runtime.default_context()
-		self := from_plugin(plugin)
-
-		if self.timer_running && self.host_timer != nil && self.host_timer.unregister_timer != nil {
-			self.host_timer.unregister_timer(self.host, self.timer_id)
-		}
-		self.timer_running = false
-
-		gui.destroy(&self.ui)
+		gui_teardown(from_plugin(plugin))
 	},
 
 	set_scale = proc "c" (plugin: ^clap.Plugin, scale: f64) -> bool {
@@ -132,6 +125,19 @@ gui_ext := ext.Plugin_Gui {
 		gui.set_visible(&self.ui, false)
 		return true
 	},
+}
+
+// Releases the window and stops both clocks. Idempotent, because it is reached from two
+// directions: the host destroying the GUI, and the plugin being destroyed with the GUI
+// still up. The second is a host contract violation, but the consequence of not handling
+// it is that the run-loop NSTimer keeps firing `tick:` into a freed Multicomp.
+gui_teardown :: proc(self: ^Multicomp) {
+	if self.timer_running && self.host_timer != nil && self.host_timer.unregister_timer != nil {
+		self.host_timer.unregister_timer(self.host, self.timer_id)
+	}
+	self.timer_running = false
+
+	gui.destroy(&self.ui)
 }
 
 //

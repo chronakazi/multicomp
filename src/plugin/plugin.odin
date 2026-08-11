@@ -247,6 +247,9 @@ init :: proc "c" (plugin: ^clap.Plugin) -> bool {
 destroy :: proc "c" (plugin: ^clap.Plugin) {
 	context = runtime.default_context()
 	self := from_plugin(plugin)
+	// A host is supposed to destroy the GUI first. Not all of them do, and a surviving
+	// run-loop timer would go on firing into this struct after it is freed.
+	gui_teardown(self)
 	delete(self.lookahead_storage)
 	free(self)
 }
@@ -566,11 +569,13 @@ process_block :: proc "contextless" (
 	// Fall back to the main input when the host has not connected a sidechain, so
 	// selecting External never silently mutes the detector.
 	detector_source := input
+	external_detector := false
 	if int(self.values[.Sidechain_Source]) == int(Sidechain_Source_Value.External) &&
 	   process.audio_inputs_count > SIDECHAIN_PORT {
 		candidate := &process.audio_inputs[SIDECHAIN_PORT]
 		if candidate.data32 != nil && candidate.channel_count > 0 {
 			detector_source = candidate
+			external_detector = true
 		}
 	}
 	source_channels := int(detector_source.channel_count)
@@ -585,10 +590,21 @@ process_block :: proc "contextless" (
 		mix := dsp.smoother_tick(&self.gains[.Mix])
 
 		// --- detector path -------------------------------------------------------
+		// Input trim stages the main path, so the *internal* detector has to see it too:
+		// it is the same signal, and the threshold has to keep meaning what the input
+		// meter says. An external sidechain arrives at whatever level the host routed to
+		// it, and trimming the signal being compressed must not change how hard that
+		// source ducks it - the DAW is where the sidechain's own level gets set.
+		//
+		// This tracks the source actually in use, not the parameter: when External is
+		// selected but nothing is patched in, the detector really is the main input and
+		// the trim applies again.
+		detector_trim := external_detector ? 1 : input_trim
+
 		detector: [MAX_CHANNELS]f64
 		for channel in 0 ..< channels {
 			source := min(channel, source_channels - 1)
-			detector[channel] = f64(detector_source.data32[source][i]) * input_trim
+			detector[channel] = f64(detector_source.data32[source][i]) * detector_trim
 		}
 		if mid_side && channels >= 2 {
 			detector[0], detector[1] = dsp.encode_mid_side(detector[0], detector[1])
@@ -629,8 +645,16 @@ process_block :: proc "contextless" (
 		processed: [MAX_CHANNELS]f64
 		if listening {
 			// Auditioning the detector: hear exactly what the compressor reacts to.
+			// In mid-side the detector array is still encoded, so it is decoded back to
+			// L/R first - monitoring it raw would put the mid in the left channel and
+			// the side in the right, which is not a signal anyone can judge by ear. The
+			// filter is linear, so decoding after it yields the filtered L/R exactly.
+			monitor := detector
+			if mid_side && channels >= 2 {
+				monitor[0], monitor[1] = dsp.decode_mid_side(monitor[0], monitor[1])
+			}
 			for channel in 0 ..< channels {
-				processed[channel] = detector[channel] * output_trim
+				processed[channel] = monitor[channel] * output_trim
 			}
 		} else {
 			wet: [MAX_CHANNELS]f64

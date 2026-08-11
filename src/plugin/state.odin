@@ -93,6 +93,12 @@ state_ext := ext.Plugin_State {
 			self.values[id] = clamp_param(id, value)
 		}
 
+		// The GUI reads values from the mirror, not from this array. Without this the
+		// panel keeps showing whatever reset_to_defaults published until the next
+		// process() or flush() - which on a stopped transport may never come, so a
+		// freshly loaded preset would open with every knob still at its default.
+		publish_values(self)
+
 		// A loaded lookahead only takes effect on the next activation, because latency
 		// is latched while active. If the value disagrees with the latched latency,
 		// announce it and ask for a restart - the same path an automation edit takes.

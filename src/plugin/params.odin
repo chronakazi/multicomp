@@ -499,7 +499,11 @@ params_ext := ext.Plugin_Params {
 
 		count := in_events.size(in_events)
 		for i in 0 ..< count {
-			handle_event(self, in_events.get(in_events, i))
+			// A host may report more events than it hands over. process() has always
+			// skipped the holes; dereferencing one here would be just as fatal.
+			if header := in_events.get(in_events, i); header != nil {
+				handle_event(self, header)
+			}
 		}
 		sync_dsp(self)
 		publish_values(self)

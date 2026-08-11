@@ -114,9 +114,13 @@ main :: proc() {
 	ui.vg = vg
 	ui.bridge = stub_bridge()
 	ui.drag.control = -1
+	// The shipping path renders the brushed texture from an image; create it here too, or
+	// these checks would be measuring a chassis the plugin never actually draws.
+	ui.brush = gui.create_brush(vg)
+	check("brushed texture created", ui.brush > 0)
 
 	nvg.BeginFrame(vg, W, H, 1)
-	gui.draw_panel(vg)
+	gui.draw_panel(vg, ui.brush)
 	gui.draw_controls(&ui)
 	nvg.EndFrame(vg)
 
@@ -235,7 +239,7 @@ main :: proc() {
 	stub_offset = 4
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
 	nvg.BeginFrame(vg, W, H, 1)
-	gui.draw_panel(vg)
+	gui.draw_panel(vg, ui.brush)
 	gui.draw_controls(&ui)
 	nvg.EndFrame(vg)
 
@@ -277,7 +281,7 @@ main :: proc() {
 	}
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
 	nvg.BeginFrame(vg, W, H, 1)
-	gui.draw_panel(vg)
+	gui.draw_panel(vg, ui.brush)
 	gui.draw_controls(&ui)
 	nvg.EndFrame(vg)
 	gl.ReadPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(pixels))
@@ -330,7 +334,7 @@ main :: proc() {
 	stub_unity = true
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
 	nvg.BeginFrame(vg, W, H, 1)
-	gui.draw_panel(vg)
+	gui.draw_panel(vg, ui.brush)
 	gui.draw_controls(&ui)
 	nvg.EndFrame(vg)
 
@@ -415,7 +419,7 @@ main :: proc() {
 	}
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
 	nvg.BeginFrame(vg, W, H, 1)
-	gui.draw_panel(vg)
+	gui.draw_panel(vg, ui.brush)
 	gui.draw_controls(&ui)
 	nvg.EndFrame(vg)
 	gl.ReadPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(pixels))

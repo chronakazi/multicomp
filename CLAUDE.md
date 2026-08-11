@@ -27,7 +27,8 @@ repo; the verified-good binding state there is its working tree, not its `HEAD`.
 
 ```
 multicomp/
-  CLAUDE.md          this file
+  CLAUDE.md          this file — the single source of truth
+  AGENTS.md          a symlink to CLAUDE.md, so both conventions find the same doc
   PLAN.md            implementation roadmap and status
   build.sh           build, bundle, validate, install
   build/             output (gitignored)
@@ -158,7 +159,7 @@ MultiComp.clap/Contents/
 
 Validation is the gate — run it before claiming anything works. Current status:
 **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**, plus **27** DSP tests, **5**
-plugin tests, **50** offline audio checks and **35** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
+plugin tests, **55** offline audio checks and **36** GUI checks. The 5 skips are note-port and preset-discovery tests, correctly
 skipped for an audio effect that has neither yet.
 
 One trap: validating a *freshly written* dylib trips the validator's 100 ms `scan-time`
@@ -294,6 +295,15 @@ input rather than assuming `audio_inputs_count > 1`. `clap.audio-ports-config` o
 mono layout (one-channel main in/out, stereo sidechain) that hosts may select while the
 plugin is deactivated; `process` is channel-count agnostic, so mono needs no DSP path of
 its own.
+
+**Input trim reaches the detector only when the detector is the main signal.** Internally
+they are the same signal, so the trim has to apply or the threshold stops meaning what the
+input meter shows. An *external* sidechain arrives at whatever level the host routed to
+it, and trimming the signal being compressed must not change how hard that source ducks
+it — there is deliberately no sidechain trim control, because a DAW already has several.
+The test is the source actually in use, not the parameter: External with nothing patched
+in falls back to the main input, and the trim applies again. Guarded by
+`./build.sh --offline`.
 
 **Defaults must leave the plugin transparent.** Inserting it and touching nothing may not
 change the signal. Ratio therefore defaults to 1:1, where the gain computer returns its

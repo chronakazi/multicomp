@@ -31,6 +31,8 @@ get_extension :: proc "c" (plugin: ^clap.Plugin, id: cstring) -> rawptr {
 		return &audio_ports_config_ext
 	case EXT_METERS:
 		return &meters_ext
+	case EXT_MIRROR:
+		return &mirror_ext
 	}
 	return nil
 }
@@ -66,6 +68,28 @@ meters_ext := Plugin_Meters {
 			return read_published(&self.meter_out)
 		}
 		return 0
+	},
+}
+
+//
+// Mirror readback. Also not a CLAP extension. The GUI never reads the audio thread's
+// parameter array; it reads an atomic mirror of it, so "what the panel shows" and "what
+// params.get_value reports" are two different questions and can disagree. This exposes
+// the first one, which is otherwise only reachable by opening a window.
+//
+
+EXT_MIRROR :: "com.foesoft.multicomp.mirror"
+
+Plugin_Mirror :: struct {
+	get: proc "c" (plugin: ^clap.Plugin, param_id: clap.Clap_Id) -> f64,
+}
+
+mirror_ext := Plugin_Mirror {
+	get = proc "c" (plugin: ^clap.Plugin, param_id: clap.Clap_Id) -> f64 {
+		if !is_valid_param(param_id) {
+			return 0
+		}
+		return read_published(&from_plugin(plugin).mirror[Param_Id(param_id)])
 	},
 }
 

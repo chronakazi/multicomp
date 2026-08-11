@@ -185,6 +185,7 @@ Plugin :: struct {
 	ports:   ^ext.Plugin_Audio_Ports,
 	configs: ^ext.Plugin_Audio_Ports_Config,
 	meters:  ^Meter_Readback,
+	mirror:  ^Mirror_Readback,
 }
 
 plugin_load :: proc(path: string) -> (p: Plugin, ok: bool) {
@@ -217,6 +218,7 @@ plugin_load :: proc(path: string) -> (p: Plugin, ok: bool) {
 		p.plugin.get_extension(p.plugin, ext.EXT_AUDIO_PORTS_CONFIG),
 	)
 	p.meters = (^Meter_Readback)(p.plugin.get_extension(p.plugin, METER_READBACK_ID))
+	p.mirror = (^Mirror_Readback)(p.plugin.get_extension(p.plugin, MIRROR_READBACK_ID))
 	return p, true
 }
 
@@ -241,6 +243,33 @@ measure_meter :: proc(p: Plugin, kind: Meter_Kind) -> f64 {
 		os.exit(1)
 	}
 	return p.meters.get(p.plugin, i32(kind))
+}
+
+// The plugin's parameter mirror: the atomic copy the GUI reads. Deliberately a separate
+// question from params.get_value, which reports the audio thread's own array - the two
+// can disagree, and when they do the panel is what the user sees.
+MIRROR_READBACK_ID :: "com.foesoft.multicomp.mirror"
+
+Mirror_Readback :: struct {
+	get: proc "c" (plugin: ^clap.Plugin, param_id: u32) -> f64,
+}
+
+read_mirror :: proc(p: Plugin, param: u32) -> f64 {
+	if p.mirror == nil || p.mirror.get == nil {
+		fmt.eprintln("plugin does not expose the mirror readback interface")
+		os.exit(1)
+	}
+	return p.mirror.get(p.plugin, param)
+}
+
+// A deliberately sloppy host: reports events it then refuses to hand over. Both process()
+// and flush() have to treat a nil header as a hole to skip rather than a pointer.
+holey_events :: proc() -> clap.Input_Events {
+	return clap.Input_Events {
+		ctx = nil,
+		size = proc "c" (l: ^clap.Input_Events) -> u32 {return 4},
+		get = proc "c" (l: ^clap.Input_Events, index: u32) -> ^clap.Event_Header {return nil},
+	}
 }
 
 // Resolves a parameter id from its display name. Exits rather than silently testing the
@@ -820,11 +849,39 @@ main :: proc() {
 	external, _ := run_stereo(p, ducking)
 	check("external source ducks from the sidechain", db(external), -39, 0.6)
 
+	// Input trim stages the main path only. Trimming the signal being compressed must
+	// move the output by exactly that much and leave the ducking depth alone, because
+	// the external sidechain arrives at the level the DAW routed to it. Fed to both, a
+	// +6 dB trim would deepen the reduction by 4.5 dB and the output would move by 1.5.
+	// The internal half of this is already covered by "input trim +6 dB" above, where
+	// the detector is the main signal and therefore does see the trim.
+	set_params(p, []Setting{{"Input Trim", 6}})
+	trimmed_external, _ := run_stereo(p, ducking)
+	check(
+		"input trim does not feed the external sidechain",
+		db(trimmed_external) - db(external),
+		6,
+		0.2,
+	)
+	set_params(p, []Setting{{"Input Trim", 0}})
+
 	// SC Listen must monitor the detector signal, not the main input.
 	set_params(p, []Setting{{"SC Listen", 1}})
 	listened, _ := run_stereo(p, ducking)
 	check("SC listen outputs the sidechain", db(listened), -8, 0.2)
 	set_params(p, []Setting{{"SC Listen", 0}, {"SC Source", 0}})
+
+	// In mid-side the detector is held encoded, so auditioning it has to decode first.
+	// A hard-left input encodes to equal mid and side; monitoring that raw would come
+	// back centred and 6 dB down instead of hard left.
+	hard_left := DEFAULT_RUN
+	hard_left.amplitude = from_db(-8.0)
+	hard_left.right_scale = 0
+	set_params(p, []Setting{{"Ratio", 1}, {"Channel Mode", 1}, {"SC Listen", 1}})
+	ms_left, ms_right := run_stereo(p, hard_left)
+	check("SC listen decodes mid-side back to L/R", db(ms_left), -8, 0.05)
+	check("SC listen keeps a hard-left source hard left", db(ms_right), -200, 0.5)
+	set_params(p, []Setting{{"SC Listen", 0}, {"Channel Mode", 0}, {"Ratio", 4}})
 
 	fmt.println()
 	fmt.println("mid-side")
@@ -848,6 +905,19 @@ main :: proc() {
 	check("nil input buffer writes silence", run_degraded(p, .Nil_Input), -200, 0, "dB")
 	check("zero-channel input writes silence", run_degraded(p, .Zero_Channels), -200, 0, "dB")
 
+	// A host may also claim events it will not hand over. Surviving this at all is the
+	// assertion - a nil dereference here takes the whole host down with it - and the
+	// value check confirms nothing was corrupted on the way past.
+	{
+		holes := holey_events()
+		before, after := 0.0, 0.0
+		threshold := param_id(p, "Threshold")
+		p.params.get_value(p.plugin, threshold, &before)
+		p.params.flush(p.plugin, &holes, &sink)
+		p.params.get_value(p.plugin, threshold, &after)
+		check("flush survives a hole in the event list", after, before, 0, "dB")
+	}
+
 	fmt.println()
 	fmt.println("state")
 	// A state round trip must preserve the values, and a lookahead loaded while active
@@ -870,6 +940,10 @@ main :: proc() {
 	check("threshold restored from state", restored, -20, 0.001, "dB")
 	p.params.get_value(p.plugin, lookahead_id, &restored)
 	check("lookahead restored from state", restored, 5, 0.001, "ms")
+	// Read before anything calls process() or flush(), because those republish the mirror
+	// and would hide a load that never did. This is the state a preset loaded on a stopped
+	// transport leaves the panel in.
+	check("state load republishes the GUI mirror", read_mirror(p, threshold_id), -20, 0.001, "dB")
 	check("latency change announced on load", f64(latency_changed_count), 1, 0, "")
 	// CLAP requires the reported latency to stay latched until reactivation, even
 	// though the parameter now says otherwise.

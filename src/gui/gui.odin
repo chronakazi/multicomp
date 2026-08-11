@@ -29,6 +29,9 @@ Gui :: struct {
 	attached:   bool,
 	visible:    bool,
 	fonts_ok:   bool,
+	// Tiled striation texture for the chassis. Belongs to `vg`, so it is created with it
+	// and freed with it; 0 means "not created", which draw_panel strokes instead.
+	brush:      int,
 	bridge:     Bridge,
 	drag:       Drag,
 
@@ -109,6 +112,7 @@ create :: proc(g: ^Gui) -> bool {
 	g.visible = false
 	g.attached = false
 	g.drag.control = -1
+	g.brush = 0
 
 	g.format = pixel_format_create(raw_data(attributes[:]))
 	if g.format == nil {
@@ -152,6 +156,7 @@ destroy :: proc(g: ^Gui) {
 		}
 		nvg_gl.Destroy(g.vg)
 		g.vg = nil
+		g.brush = 0 // the image belonged to that context; the handle is meaningless now
 	}
 
 	if g.gl_context != nil {
@@ -227,6 +232,7 @@ render :: proc(g: ^Gui) {
 			return
 		}
 		g.fonts_ok = load_fonts(g.vg)
+		g.brush = create_brush(g.vg)
 	}
 
 	// nanovg works in points and scales its own geometry; the GL viewport is in pixels.
@@ -243,7 +249,7 @@ render :: proc(g: ^Gui) {
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
 
 	nvg.BeginFrame(g.vg, WIDTH, HEIGHT, backing)
-	draw_panel(g.vg)
+	draw_panel(g.vg, g.brush)
 	if g.fonts_ok {
 		draw_controls(g)
 	}

@@ -397,6 +397,81 @@ Verified: validator **21 tests, 16 passed, 0 failed, 0 warnings**; `odin test sr
 `./build.sh --offline` **50 checks, all passing**; `./build.sh --gui` **35 checks, all
 passing**.
 
+**Review batch, with measurements. ✅ DONE.** A second full review, this time with both hot
+paths benchmarked rather than reasoned about. Six items, in the order they were found:
+
+- **A state load never republished the GUI mirror.** `reset_to_defaults` published the
+  defaults and the entry loop then wrote `values` directly, so until the next `process`
+  or `flush` the panel showed defaults while the DSP used the loaded preset. On a stopped
+  transport that is indefinitely — load a preset, open the window, every knob is wrong.
+  Nothing caught it because the offline harness read `params.get_value` (the audio
+  thread's array) and guicheck drives a stub bridge; neither had ever read the mirror.
+  A new `com.foesoft.multicomp.mirror` readback interface, sibling to the meter one,
+  makes "what the panel would show" assertable. Confirmed to fail before the fix: the
+  mirror read -18 (the default) where the state said -20.
+- **`params.flush` dereferenced a nil event header.** `process` had always skipped holes
+  in a sloppy host's event list; `flush` had the identical loop without the guard.
+  Confirmed by reverting: a segfault, not a failed assertion.
+- **`plugin.destroy` did not tear the GUI down.** A host is supposed to destroy the GUI
+  first; if one does not, the run-loop `NSTimer` keeps firing `tick:` into a freed
+  struct. Both paths now go through one idempotent `gui_teardown`.
+- **The brushed texture cost more than the entire DSP.** Measured: a full repaint was
+  1.68 ms, of which `draw_panel` was 0.88 ms, of which the striations were 0.80 ms —
+  nanovg re-tessellating ~380 separate stroked hairlines every frame. As a tiled 3pt
+  image it is 0.04 ms. Frame time 1.68 → **0.89 ms**, 10.1% → **5.3%** of a core at
+  60 Hz; the chassis alone 0.88 → 0.13 ms. The two renders differ by at most **3/255**
+  on any channel of any pixel, with the striations landing on the same coordinates.
+  One trap on the way: nanovg's invalid image handle is `0`, not a negative, so the
+  obvious `>= 0` guard would have drawn with a dead texture.
+- **SC Listen monitored an undecoded mid-side signal.** In M/S the detector array is
+  still encoded, so auditioning it put the mid in the left channel and the side in the
+  right. It is decoded for monitoring only; the filter is linear, so what comes out is
+  the filtered L/R exactly. Before the fix a hard-left source came back centred and
+  6 dB down.
+- **Input trim no longer feeds the external sidechain.** It is a main-path staging
+  control, and an external source arrives at whatever level the DAW routed to it — so
+  trimming the signal being compressed now moves the output by exactly that much and
+  leaves the ducking depth alone. Fed to both, a +6 dB trim deepened the reduction by
+  4.5 dB and moved the output by only 1.5. The *internal* detector still sees the trim,
+  because there it is the same signal and the threshold has to keep meaning what the
+  input meter says; so does the fallback when External is selected with nothing patched
+  in, since the detector really is the main input in that case. No extra SC trim control
+  — the DAW already has plenty of ways to set that level.
+- **AGENTS.md is now a symlink to CLAUDE.md**, which is the single source of truth. It
+  had been a byte-identical 346-line copy, which is a guaranteed drift.
+
+Two numbers worth carrying forward, both measured rather than assumed:
+
+- **The DSP costs 0.19% of one core** — 40 ns per stereo sample at 48 kHz for the whole
+  chain. `math.pow(10, x)` is 2.6 ns and `log10` 6.4 ns on this hardware, so the instinct
+  to strip transcendentals out of the sample loop would buy nothing. Leave `dsp/db.odin`
+  alone.
+- **The open GUI now costs ~5.3% of a core**, still ~28x the audio path. The remaining
+  0.86 ms is `draw_controls`, and the repaint is unconditional: a dirty flag (any mirrored
+  value moved, any meter above silence) would take idle cost to near zero. That is the
+  next GUI optimisation, if one is wanted.
+
+Verified: validator **21 tests, 16 passed, 0 failed, 5 skipped, 0 warnings**;
+`odin test src/dsp` **27** and `odin test src/plugin` **5**, all passing;
+`./build.sh --offline` **55 checks** (new: SC listen decodes M/S and keeps a hard-left
+source hard left, input trim does not feed the external sidechain, state load republishes
+the mirror, flush survives a hole in the event list) and `./build.sh --gui` **36 checks**
+(new: brushed texture created), all passing.
+
+Still open from the review, deliberately not taken in this batch:
+
+- **`state.load` writes `values` from the main thread while `process` reads them**, so a
+  preset load during playback can be seen half-applied for one block. Same class on the
+  read side for `params.get_value` and `state.save`. Benign on arm64, where an aligned
+  f64 does not tear, but the mirror exists precisely for this.
+- **`frames_count == 0` drops every event in the block**, as does any event whose `.time`
+  is past the end — the `for frame < frames_count` loop never runs.
+- **The runtime Objective-C class is registered once per process and never disposed**, so
+  a host that `dlclose`s and reloads the plugin gets a class whose method pointers are in
+  an unmapped image.
+- **`gui.attach` is not idempotent** — a second `set_parent` adds the subview twice.
+- **Feedback topology has no stability test** at fast attack and high ratio.
+
 ## Feasibility notes
 
 Verified this session, not assumed:
