@@ -1,9 +1,11 @@
 # multicomp — implementation plan
 
 A full-featured single-band compressor in CLAP format, written in Odin, macOS arm64.
-DSP is structured so bands become a slice — multiband is an additive step later, not a rewrite.
+DSP is structured as a fixed-capacity band array plus an active count, so multiband is an
+additive step later, not a rewrite.
 
-Read `CLAUDE.md` first for environment, build commands, style, and CLAP+Odin gotchas.
+Read `AGENTS.md` first for environment, build commands, style, current status, and
+CLAP+Odin gotchas. `CLAUDE.md` is a symlink to it for tool compatibility.
 
 ## Architecture
 
@@ -58,10 +60,12 @@ change requires touching CLAP types, it belongs in `plugin/`.
 | Mix | 0 … 100 % | parallel compression |
 | Output trim | −24 … +24 dB | |
 
-Every parameter is `AUTOMATABLE`; continuous ones are also `MODULATABLE`. The table is a
-single source of truth — id, name, module, range, flags, unit, and the value↔text
-formatters live in one array in `plugin/params.odin`, and `count`/`get_info` read from it.
-That keeps `clap.params` and the GUI from drifting apart.
+Every parameter except Lookahead is `AUTOMATABLE`; Lookahead is deliberately static because
+it changes reported latency. Continuous parameters are not yet `MODULATABLE`: Phase 8 adds
+event handling and restores that flag together, so hosts are never offered a control that
+silently does nothing. The table is a single source of truth — id, name, module, range,
+flags, unit, and the value↔text formatters live in one array in `plugin/params.odin`, and
+`count`/`get_info` read from it. That keeps `clap.params` and the GUI from drifting apart.
 
 ## DSP design
 
@@ -85,8 +89,9 @@ Building blocks in `dsp/`: `Biquad` (SC filter now, Linkwitz-Riley crossovers la
 parameter smoothing so knob moves don't zipper).
 
 **Multiband seam**: the per-band state lives in a `Compressor_Band` struct, and the plugin
-holds `bands: []Compressor_Band` with `len == 1` today. Going multiband means adding a
-crossover and growing that slice plus the parameter table — the band DSP itself is untouched.
+holds a fixed `[MAX_BANDS]Compressor_Band` plus `band_count == 1` today, avoiding allocation
+on the audio thread. Going multiband means adding a crossover, increasing the active count,
+and extending the parameter table — the band DSP itself is untouched.
 
 ## Phases
 
@@ -292,11 +297,21 @@ tests, **33** offline audio checks and **25** GUI checks, including that reducti
 downward from the top, that the space below the trace stays clear, and that the input
 ladder renders.
 
-**Phase 8 — Polish.** Presets (`clap.preset-load`), `clap.remote-controls` for hardware
-surfaces, param modulation (and re-adding `MODULATABLE` with it — the flag was dropped
-in the polish batch because advertising modulation that `handle_event` ignores is a
-silent no-op in hosts), GUI resize. (Code signing and packaging for distribution are
-deliberately deferred until the plugin has had time in real sessions.)
+**Phase 8 — Polish. ⏭ NEXT.** This is the only remaining implementation phase in the
+current plan, in this order:
+
+1. Factory presets through the preset-discovery factory/provider and `clap.preset-load`,
+   with state-compatible loading plus discovery and offline coverage.
+2. `clap.remote-controls` pages for hardware surfaces.
+3. Parameter modulation, including sample-accurate `PARAM_MOD` handling and restoring
+   `MODULATABLE` only on parameters whose modulation is implemented.
+4. GUI resizing: scalable layout/rendering plus truthful `set_scale`, size negotiation,
+   and resize hints.
+
+Each item must preserve the existing validator, DSP, plugin, offline, and GUI gates. Code
+signing and packaging for distribution are deliberately deferred until the plugin has had
+time in real sessions. Windows/Linux GUI support, VST3/AU wrappers, and multiband expansion
+remain longer-term work outside Phase 8.
 
 **Post-review correctness batch. ✅ DONE.** A full code review found four latent defects
 the validator could never reach, all now fixed and locked in with new offline checks:
@@ -437,8 +452,9 @@ paths benchmarked rather than reasoned about. Six items, in the order they were 
   input meter says; so does the fallback when External is selected with nothing patched
   in, since the detector really is the main input in that case. No extra SC trim control
   — the DAW already has plenty of ways to set that level.
-- **AGENTS.md is now a symlink to CLAUDE.md**, which is the single source of truth. It
-  had been a byte-identical 346-line copy, which is a guaranteed drift.
+- **CLAUDE.md is a symlink to AGENTS.md**, which is the single source of truth. The two
+  had previously been duplicate files, which guaranteed drift; the link direction was
+  later reversed so the repository-standard agent guide owns the content.
 
 Two numbers worth carrying forward, both measured rather than assumed:
 
